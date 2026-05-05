@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, MessageSquare, CheckCircle, AlertCircle, Loader2, ChevronDown, ChevronUp, Shuffle, X } from 'lucide-react';
 import { Button } from './ui/button';
@@ -6,45 +6,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Label } from './ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
 import { Helmet } from 'react-helmet-async';
+import { showErrorToast, showSuccessToast, showWarningToast } from '@/lib/toastUtils';
 
-const API = "https://webportal.jiit.ac.in:6011/StudentPortalAPI";
+import { proxy_url } from '@/lib/api';
+const API = proxy_url;
 
-function generate_date_seq(date = null) {
-  if (date === null) {
-    date = new Date();
-  }
-  const day = String(date.getDate()).padStart(2, "0");
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const year = String(date.getFullYear()).slice(2);
-  const weekday = String(date.getDay());
-  return day[0] + month[0] + year[0] + weekday + day[1] + month[1] + year[1];
-}
-
-function base64Encode(data) {
-  return btoa(String.fromCharCode.apply(null, new Uint8Array(data)));
-}
-
-var IV = new TextEncoder().encode("dcek9wb8frty1pnm");
-
-async function generate_key(date = null) {
-  const dateSeq = generate_date_seq(date);
-  const keyData = new TextEncoder().encode("qa8y" + dateSeq + "ty1pn");
-  return window.crypto.subtle.importKey("raw", keyData, { name: "AES-CBC" }, false, ["encrypt", "decrypt"]);
-}
-
-async function encrypt(data) {
-  const key = await generate_key();
-  const encrypted = await window.crypto.subtle.encrypt({ name: "AES-CBC", iv: IV }, key, data);
-  return new Uint8Array(encrypted);
-}
-
-async function serialize_payload(payload) {
-  const raw = new TextEncoder().encode(JSON.stringify(payload));
-  const pbytes = await encrypt(raw);
-  return base64Encode(pbytes);
-}
-
-const Feedback = ({ w }) => {
+const Feedback = ({ w, serialize_payload }) => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
@@ -136,6 +103,7 @@ const Feedback = ({ w }) => {
           }
         } catch (error) {
           console.error('Failed to get questions for', question_feedback_payload, error);
+          showWarningToast("Fetch Warning", `Could not load all feedback questions`);
         }
       }
 
@@ -157,6 +125,7 @@ const Feedback = ({ w }) => {
 
     } catch (err) {
       console.error(err);
+      showErrorToast("Feedback Load Error", err.message || 'Failed to load feedback data.');
       setMessage(err.message || 'Failed to load feedback data.');
     } finally {
       setFetching(false);
@@ -255,6 +224,29 @@ const Feedback = ({ w }) => {
     setRandomized(true);
   };
 
+  const isAlreadySubmitted = (err) => {
+    if (!err) return false;
+    if (err.status === 417) return true;
+    const msg = (err.message || '').toLowerCase();
+    if (msg.includes('feedback already submit') || msg.includes('feedback already sumbit')) return true;
+    if (msg.includes('responseStatus') || msg.includes('errors') || msg.includes('"responsestatus"')) return true;
+    if (err.responseStatus === 'Failure') return true;
+    if (Array.isArray(err.errors) && err.errors.some(e => /feedback already sumbit/i.test(e))) return true;
+    return false;
+  };
+
+  const buildSavePayload = (subject, questions_to_submit) => ({
+    instituteid: w.session.instituteid,
+    studentid: w.session.memberid,
+    eventid: eventData.eventid,
+    subjectid: subject.subjectid,
+    facultyid: subject.employeeid,
+    registrationid: subject.registrationid,
+    questionid: questions_to_submit,
+    facultycomments: null,
+    coursecomments: null
+  });
+
   const handleFeedbackSubmit = async () => {
     if (!w || !w.session || !eventData) {
       setMessage('Session expired. Please login again.');
@@ -267,74 +259,43 @@ const Feedback = ({ w }) => {
     try {
       const SAVE_ENDPOINT = "/feedbackformcontroller/savedatalist";
 
-      for (let [key, data] of Object.entries(questionsData)) {
+      for (const data of Object.values(questionsData)) {
         const { subject, questions } = data;
         const questions_to_submit = questions.map(q => {
           const ratingKey = `${subject.subjectid}-${subject.employeeid}-${q.questionid}`;
           const selectedRating = ratings[ratingKey];
+          if (!selectedRating) throw new Error(`Please select rating for all questions in ${subject.subjectdesc}`);
+          return { ...q, rating: selectedRating };
+        });
 
-          if (!selectedRating) {
-            throw new Error(`Please select rating for all questions in ${subject.subjectdesc}`);
+        const save_data_payload = await serialize_payload(buildSavePayload(subject, questions_to_submit));
+
+        try {
+          await w.__hit("POST", API + SAVE_ENDPOINT, { json: save_data_payload, authenticated: true });
+        } catch (err) {
+          if (isAlreadySubmitted(err)) {
+            showWarningToast("Already Submitted", "Your feedback has already been submitted for this semester.");
+            setFeedbackSubmitted(true);
+            setMessage('Your feedback has already been submitted for this semester.');
+            setDialogType('already_submitted');
+            setDialogOpen(true);
+            return;
           }
-
-          return {
-            ...q,
-            rating: selectedRating
-          };
-        });
-
-        const save_data_payload = await serialize_payload({
-          instituteid: w.session.instituteid,
-          studentid: w.session.memberid,
-          eventid: eventData.eventid,
-          subjectid: subject.subjectid,
-          facultyid: subject.employeeid,
-          registrationid: subject.registrationid,
-          questionid: questions_to_submit,
-          facultycomments: null,
-          coursecomments: null
-        });
-
-        await w.__hit("POST", API + SAVE_ENDPOINT, { json: save_data_payload, authenticated: true });
+          throw err;
+        }
       }
 
       setMessage('Feedback submitted successfully!');
       setFeedbackSubmitted(true);
       setDialogType('success');
       setDialogOpen(true);
-
+      showSuccessToast("Feedback Submitted", "Your feedback has been successfully submitted!");
     } catch (err) {
       console.error('Submit error:', err);
-      console.log('Error message:', err.message);
-      console.log('Error status:', err.status);
-      console.log('Error responseStatus:', err.responseStatus);
-      console.log('Error errors:', err.errors);
-
-      const isAlreadySubmitted =
-        (err.message && (
-          err.message.includes('Feedback already Submit!') ||
-          err.message.includes('Feedback already Sumbit!') ||
-          err.message.includes('"responseStatus": "Failure"') ||
-          err.message.includes('responseStatus') ||
-          err.message.includes('errors')
-        )) ||
-        (err.status === 417) ||
-        (err.responseStatus === 'Failure' && err.errors && (
-          err.errors.includes('Feedback already Submit!') ||
-          err.errors.includes('Feedback already Sumbit!')
-        )) ||
-        (err.responseStatus === 'Failure');
-
-      if (isAlreadySubmitted) {
-        setFeedbackSubmitted(true);
-        setMessage('Your feedback has already been submitted for this semester.');
-        setDialogType('already_submitted');
-        setDialogOpen(true);
-      } else {
-        setMessage(err.message || 'Failed to submit feedback.');
-        setDialogType('error');
-        setDialogOpen(true);
-      }
+      showErrorToast("Submission Error", err.message || 'Failed to submit feedback.');
+      setMessage(err.message || 'Failed to submit feedback.');
+      setDialogType('error');
+      setDialogOpen(true);
     } finally {
       setLoading(false);
     }
@@ -354,7 +315,7 @@ const Feedback = ({ w }) => {
               variant="ghost"
               size="icon"
               onClick={() => navigate(-1)}
-              className="rounded-full hover:bg-accent"
+              className="rounded-lg hover:bg-accent"
             >
               <ArrowLeft className="w-6 h-6" />
             </Button>
@@ -368,8 +329,8 @@ const Feedback = ({ w }) => {
             </div>
           ) : message && !eventData && Object.keys(questionsData).length === 0 ? (
             <div className="text-center py-12">
-              <div className="bg-card border border-border rounded-xl p-8 max-w-md mx-auto">
-                <AlertCircle className="w-16 h-16 mx-auto mb-4 text-yellow-500" />
+              <div className="bg-card border border-border rounded-lg p-8 max-w-md mx-auto">
+                <AlertCircle className="w-16 h-16 mx-auto mb-4 text-foreground" />
                 <h2 className="text-xl font-semibold text-foreground mb-2">Feedback Unavailable</h2>
                 <p className="text-muted-foreground mb-6">{message}</p>
                 <div className="flex justify-center">
@@ -386,7 +347,8 @@ const Feedback = ({ w }) => {
           ) : feedbackSubmitted ? (
 
             <div className="text-center py-12">
-              <div className="bg-card border border-border rounded-xl p-8 max-w-md mx-auto">
+              {}
+              <div className="bg-card border border-border rounded-lg p-8 max-w-md mx-auto">
                 <CheckCircle className="w-16 h-16 mx-auto mb-4 text-green-500" />
                 <h2 className="text-xl font-semibold text-foreground mb-2">
                   Feedback Already Submitted
@@ -406,7 +368,7 @@ const Feedback = ({ w }) => {
           ) : (
             <>
               {eventData && (
-                <div className="bg-card border border-border rounded-xl p-6">
+                <div className="bg-card border border-border rounded-lg p-6">
                   <div className="space-y-2">
                     <h2 className="text-xl font-semibold flex items-center gap-2">
                       <MessageSquare className="w-5 h-5" />
@@ -418,7 +380,7 @@ const Feedback = ({ w }) => {
 
 
               {Object.keys(questionsData).length > 0 && (
-                <div className="bg-card border border-border rounded-xl p-4">
+                <div className="bg-card border border-border rounded-lg p-4">
                   <div className="flex flex-col lg:flex-row items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
                       <CheckCircle className="w-5 h-5 flex-shrink-0" />
@@ -469,7 +431,8 @@ const Feedback = ({ w }) => {
                 {Object.entries(questionsData).map(([key, data]) => {
                   const { subject, questions, ratings: ratingOptions } = data;
                   return (
-                    <div key={key} className="bg-card border border-border rounded-xl p-6 space-y-4">
+                    
+                    <div key={key} className="bg-card border border-border rounded-lg p-6 space-y-4">
                       <div className="border-b border-border pb-4">
                         <div className="flex items-start justify-between">
                           <div className="flex-1">
@@ -484,7 +447,7 @@ const Feedback = ({ w }) => {
                             </p>
                           </div>
                           <div className="ml-4">
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium bg-muted text-muted-foreground">
                               {subject.subjectcomponentcode === 'L' ? 'Lecture' : subject.subjectcomponentcode === 'P' ? 'Practical' : subject.subjectcomponentcode}
                             </span>
                           </div>
@@ -528,53 +491,54 @@ const Feedback = ({ w }) => {
                               ))}
                           </SelectContent>
                         </Select>
+
+
+                        {expandedSubjects[`${subject.subjectid}-${subject.employeeid}`] && (
+                          <div className="space-y-4 border-t border-border pt-4">
+                            <Label className="text-sm font-medium text-foreground">
+                              Individual Questions
+                            </Label>
+                            {questions.map((question) => {
+                              const ratingKey = `${subject.subjectid}-${subject.employeeid}-${question.questionid}`;
+                              const currentRating = ratings[ratingKey];
+
+                              return (
+                                <div key={question.questionid} className="space-y-2">
+                                  <Label className="text-sm font-medium text-foreground">
+                                    {question.questionbody}
+                                  </Label>
+                                  <Select
+                                    value={currentRating || ""}
+                                    onValueChange={(value) => handleRatingChange(subject.subjectid, subject.employeeid, question.questionid, value)}
+                                  >
+                                    <SelectTrigger className="w-full bg-background text-foreground border-border">
+                                      <SelectValue placeholder={randomized ? "Random rating" : "Choose rating"} />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {ratingOptions
+                                        .filter(r => r.questionid === question.questionid)
+                                        .sort((a, b) => a.slno - b.slno)
+                                        .map((rating) => (
+                                          <SelectItem key={rating.ratingid} value={rating.rating}>
+                                            {rating.ratingdesc}
+                                          </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
-
-
-                      {expandedSubjects[`${subject.subjectid}-${subject.employeeid}`] && (
-                        <div className="space-y-4 border-t border-border pt-4">
-                          <Label className="text-sm font-medium text-foreground">
-                            Individual Questions
-                          </Label>
-                          {questions.map((question) => {
-                            const ratingKey = `${subject.subjectid}-${subject.employeeid}-${question.questionid}`;
-                            const currentRating = ratings[ratingKey];
-
-                            return (
-                              <div key={question.questionid} className="space-y-2">
-                                <Label className="text-sm font-medium text-foreground">
-                                  {question.questionbody}
-                                </Label>
-                                <Select
-                                  value={currentRating || ""}
-                                  onValueChange={(value) => handleRatingChange(subject.subjectid, subject.employeeid, question.questionid, value)}
-                                >
-                                  <SelectTrigger className="w-full bg-background text-foreground border-border">
-                                    <SelectValue placeholder={randomized ? "Random rating" : "Choose rating"} />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {ratingOptions
-                                      .filter(r => r.questionid === question.questionid)
-                                      .sort((a, b) => a.slno - b.slno)
-                                      .map((rating) => (
-                                        <SelectItem key={rating.ratingid} value={rating.rating}>
-                                          {rating.ratingdesc}
-                                        </SelectItem>
-                                      ))}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
                     </div>
                   );
                 })}
               </div>
 
               {Object.keys(questionsData).length > 0 && !feedbackSubmitted && (
-                <div className="bg-card border border-border rounded-xl p-6">
+                
+                <div className="bg-card border border-border rounded-lg p-6">
                   <Button
                     onClick={handleFeedbackSubmit}
                     disabled={loading}

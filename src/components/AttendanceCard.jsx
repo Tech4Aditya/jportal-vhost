@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import PropTypes from 'prop-types';
+import { calculateClassesNeeded, calculateClassesCanMiss } from '@/lib/math';
 import CircleProgress from "./CircleProgress";
+import { Loader2 } from 'lucide-react';
 import {
   Sheet,
   SheetContent,
@@ -8,6 +10,7 @@ import {
 } from "@/components/ui/sheet";
 import { Card, CardContent } from "@/components/ui/card";
 import { Calendar } from "@/components/ui/calendar";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   LineChart,
   Line,
@@ -25,28 +28,93 @@ const AttendanceCard = ({
   subjectAttendanceData,
   fetchSubjectAttendance,
   attendanceGoal,
+  subjectCacheStatus,
 }) => {
-  const { name, attendance, combined, lecture, tutorial, practical, classesNeeded, classesCanMiss, target } = subject;
-  const effectiveTarget = typeof attendanceGoal === 'number' ? attendanceGoal : (typeof target === 'number' ? target : 75);
+  const { name, attendance, combined, lecture, tutorial, practical, classesNeeded, classesCanMiss, target, isNewFormat } = subject;
+  const effTarget = typeof attendanceGoal === 'number' ? attendanceGoal : (typeof target === 'number' ? target : 75);
 
-  const parsedCombined = parseFloat(combined);
-  const rawPercentage = attendance.total > 0
-    ? (isFinite(parsedCombined) ? parsedCombined : (attendance.attended / attendance.total) * 100)
-    : 100;
-  const displayedNumber = Math.round(rawPercentage * 10) / 10;
-  const attendancePercentage = Number(displayedNumber);
-  const displayName = name.replace(/\s*\([^)]*\)\s*$/, '');
+  const [loading, setLoading] = useState(false);
+  const [selDate, setSelDate] = useState(null);
+  const [attn, setAttn] = useState(attendance);
+  const [needClass, setNeedClass] = useState(classesNeeded);
+  const [missClass, setMissClass] = useState(classesCanMiss);
 
-  const [isLoading, setIsLoading] = useState(false);
-  const [selectedDate, setSelectedDate] = useState(null);
+  const isFetching = loading || (subjectCacheStatus && subjectCacheStatus[subject.name] === 'fetching');
+
+  const comb = parseFloat(combined);
+  const rawPct = attn.total > 0
+    ? (isFinite(comb) ? comb : (attn.attended / attn.total) * 100)
+    : (isFinite(comb) ? comb : 100);
+  const num = Math.round(rawPct * 10) / 10;
+  const pct = Number(num);
+  
+  const dName = name.replace(/\s*\([^)]*\)\s*$/, '');
+  
+  const titleCasedName = dName
+    .toLowerCase()
+    .replace(/\b\w/g, char => char.toUpperCase());
+
+  const calcFromDaily = useCallback((data) => {
+    if (!Array.isArray(data)) return;
+
+    let att = 0;
+    let tot = 0;
+
+    data.forEach((entry) => {
+      tot++;
+      if (entry.present === "Present") {
+        att++;
+      }
+    });
+
+    setAttn(prev => {
+      if (prev.attended === att && prev.total === tot) return prev;
+      return { attended: att, total: tot };
+    });
+
+    if (tot > 0 && attendanceGoal) {
+      const need = calculateClassesNeeded(att, tot, attendanceGoal);
+      const miss = calculateClassesCanMiss(att, tot, attendanceGoal);
+
+      setNeedClass(prev => {
+        const newVal = need > 0 ? need : 0;
+        return prev === newVal ? prev : newVal;
+      });
+      setMissClass(prev => {
+        const newVal = miss > 0 ? miss : 0;
+        return prev === newVal ? prev : newVal;
+      });
+    }
+  }, [attendanceGoal]);
+
+  useEffect(() => {
+    if (isNewFormat) {
+      if (subjectAttendanceData[subject.name]) {
+        calcFromDaily(subjectAttendanceData[subject.name]);
+      }
+    }
+  }, [isNewFormat, subject.name, subjectAttendanceData, calcFromDaily]);
+
+  useEffect(() => {
+    if (!loading && subjectCacheStatus && subjectCacheStatus[subject.name] === 'fetching') {
+      setLoading(true);
+    }
+    if (loading && subjectCacheStatus && subjectCacheStatus[subject.name] === 'cached') {
+      setLoading(false);
+    }
+  }, [subjectCacheStatus]);
 
   const handleClick = async () => {
     setSelectedSubject(subject);
 
     if (!subjectAttendanceData[subject.name]) {
-      setIsLoading(true);
+      setLoading(true);
       await fetchSubjectAttendance(subject);
-      setIsLoading(false);
+      setLoading(false);
+    }
+
+    if (isNewFormat && subjectAttendanceData[subject.name]) {
+      calcFromDaily(subjectAttendanceData[subject.name]);
     }
   };
 
@@ -115,30 +183,57 @@ const AttendanceCard = ({
 
   return (
     <>
-      <Card className="cursor-pointer bg-card hover:bg-accent/50 transition-colors duration-200 border-border">
-        <CardContent className="p-4" onClick={handleClick}>
-          <div className="flex justify-between items-center">
-            <div className="flex-1 mr-4">
-              <h2 className="text-sm max-[390px]:text-xs font-semibold text-foreground">{displayName}</h2>
-              {lecture !== '' && <p className="text-sm max-[390px]:text-xs text-foreground">Lecture: {lecture}%</p>}
-              {tutorial !== '' && <p className="text-sm max-[390px]:text-xs text-foreground">Tutorial: {tutorial}%</p>}
-              {practical !== '' && <p className="text-sm max-[390px]:text-xs text-foreground">Practical: {practical}%</p>}
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="text-center">
-                <div className="text-sm max-[390px]:text-xs text-foreground">{attendance.attended}</div>
-                <div className="h-px w-full bg-border"></div>
-                <div className="text-sm max-[390px]:text-xs text-foreground">{attendance.total}</div>
-              </div>
-              <div className="flex flex-col items-center">
-                <CircleProgress percentage={attendancePercentage} label={`${Math.round(attendancePercentage)}`} target={effectiveTarget} />
-                {classesNeeded > 0 ? (
-                  <div className="text-xs mt-1 text-muted-foreground">
-                    Attend {classesNeeded}
+      <Card className="cursor-pointer bg-card hover:bg-muted/30 border-border/50 hover:border-border/80 transition-all duration-200 rounded-lg shadow-sm hover:shadow-md group">
+        <CardContent className="p-5 md:p-6" onClick={handleClick}>
+          <div className="flex justify-between items-start gap-4">
+            <div className="flex-1 overflow-hidden">
+              <div className="flex items-start gap-2.5 mb-2">
+                {/* Removed line-clamp-2 here */}
+                <h2 className="text-sm md:text-xl font-bold text-foreground leading-tight break-words group-hover:text-primary transition-colors">
+                  {titleCasedName}
+                </h2>
+                {isFetching && (
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/40 px-2 py-0.5 rounded-md mt-0.5 flex-shrink-0">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Loading</span>
                   </div>
-                ) : classesCanMiss > 0 && (
-                  <div className="text-xs mt-1 text-muted-foreground">
-                    Can miss {classesCanMiss}
+                )}
+              </div>
+              <div className="flex flex-col gap-y-1 text-xs md:text-sm text-muted-foreground mt-2">
+                {lecture !== '' && <div>Lecture: <span className="text-foreground font-medium">{lecture}%</span></div>}
+                {tutorial !== '' && <div>Tutorial: <span className="text-foreground font-medium">{tutorial}%</span></div>}
+                {practical !== '' && <div>Practical: <span className="text-foreground font-medium">{practical}%</span></div>}
+              </div>
+            </div>
+            <div className="flex items-center gap-4 flex-shrink-0">
+              <div className="text-center px-3 py-2 bg-muted/30 rounded-lg border border-border/30">
+                {isFetching ? (
+                  <>
+                    <Skeleton className="w-10 h-5 mb-2" />
+                    <div className="h-px w-full bg-border/30 my-1.5"></div>
+                    <Skeleton className="w-10 h-5" />
+                  </>
+                ) : (
+                  <>
+                    <div className="text-sm font-semibold text-foreground">
+                      {attn.attended ?? '-'}
+                    </div>
+                    <div className="h-px w-full bg-border/30 my-1.5"></div>
+                    <div className="text-xs text-muted-foreground font-medium">
+                      {attn.total ?? '-'} classes
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="flex flex-col items-center gap-1">
+                <CircleProgress percentage={pct} label={`${Math.round(pct)}`} target={effTarget} />
+                {needClass > 0 ? (
+                  <div className="text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-md">
+                    Attend {needClass}
+                  </div>
+                ) : missClass > 0 && (
+                  <div className="text-xs font-medium text-green-600 dark:text-green-400 bg-green-500/10 px-2 py-0.5 rounded-md">
+                    Can miss {missClass}
                   </div>
                 )}
               </div>
@@ -149,9 +244,9 @@ const AttendanceCard = ({
 
       <Sheet open={selectedSubject?.name === subject.name} onOpenChange={() => {
         setSelectedSubject(null);
-        setSelectedDate(null);
+        setSelDate(null);
       }}>
-        <SheetContent side="bottom" className="h-[80vh] md:h-[600px] bg-background text-foreground border-0 overflow-hidden flex flex-col">
+        <SheetContent side="bottom" className="h-[80vh] md:h-[600px] bg-background text-foreground border-0 overflow-hidden flex flex-col rounded-t-lg">
           <SheetHeader>
           </SheetHeader>
           <div className="py-4 flex flex-1 overflow-y-auto">
@@ -202,7 +297,7 @@ const AttendanceCard = ({
                         statuses.filter(s => s === true).length ===
                         statuses.filter(s => s === false).length;
                     },
-                    selected: (date) => date === selectedDate,
+                    selected: (date) => date === selDate,
                   }}
                   modifiersStyles={{
                     presentSingle: {
@@ -246,9 +341,9 @@ const AttendanceCard = ({
                       borderRadius: '50%'
                     },
                   }}
-                  selected={selectedDate}
-                  onSelect={(date) => setSelectedDate(date)}
-                  className={`pb-2 text-foreground ${isLoading ? 'animate-pulse' : ''} w-full flex-shrink-0 max-w-full`}
+                  selected={selDate}
+                  onSelect={(date) => setSelDate(date)}
+                  className={`pb-2 text-foreground ${loading ? 'animate-pulse' : ''} w-full flex-shrink-0 max-w-full`}
                   classNames={{
                     months: "flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0",
                     month: "space-y-4 w-full",
@@ -273,14 +368,14 @@ const AttendanceCard = ({
                   }}
                 />
 
-                {selectedDate && (
+                {selDate && (
                   <div className="mt-4 space-y-2 w-full pb-4 flex-shrink-0">
-                    {getClassesForDate(selectedDate).map((classData, index) => (
+                    {getClassesForDate(selDate).map((classData, index) => (
                       <div
                         key={index}
-                        className={`p-2 rounded ${classData.present === "Present"
-                            ? "bg-green-600/40 dark:bg-green-200/40"
-                            : "bg-red-600/40 dark:bg-red-200/40"
+                        className={`p-2 rounded-md ${classData.present === "Present"
+                          ? "bg-green-600/40 dark:bg-green-200/40"
+                          : "bg-red-600/40 dark:bg-red-200/40"
                           }`}
                       >
                         <p className="text-sm max-[390px]:text-xs text-foreground">
@@ -386,4 +481,5 @@ AttendanceCard.propTypes = {
   setSelectedSubject: PropTypes.func.isRequired,
   subjectAttendanceData: PropTypes.object.isRequired,
   fetchSubjectAttendance: PropTypes.func.isRequired,
+  subjectCacheStatus: PropTypes.object,
 };

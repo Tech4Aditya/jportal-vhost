@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   HashRouter as Router,
   Routes,
@@ -7,7 +7,7 @@ import {
   useNavigate,
   useLocation,
 } from "react-router-dom";
-import { CSSTransition, TransitionGroup } from 'react-transition-group';
+import { CSSTransition, TransitionGroup } from "react-transition-group";
 import "./styles/transitions.css";
 import "./styles/layout.css";
 import Header from "./components/Header";
@@ -24,28 +24,40 @@ import AcademicCalendar from "./components/AcademicCalendar";
 import { Calendar as CalendarIcon } from "lucide-react";
 import "./App.css";
 import { ThemeProvider } from "./context/ThemeContext";
+import { getMessMenuOpen as getMessMenuOpenFromCache, setMessMenuOpen as persistMessMenuOpen, getAttendanceGoal as getAttendanceGoalFromCache, setAttendanceGoal as persistAttendanceGoal, getUsername, getPassword, hasAnyPortalData, getDefaultTab, getExamStartDate, getExamEndDate, getSwipeEnabled as getSwipeEnabledFromCache } from '@/components/scripts/cache' 
 import { Loader2 } from "lucide-react";
 import MessMenu from "./components/MessMenu";
 import InstallPWA from "./components/InstallPWA";
 import { UtensilsCrossed } from "lucide-react";
-import { HelmetProvider } from 'react-helmet-async';
+import { HelmetProvider } from "react-helmet-async";
+import { Toaster } from "sonner";
 
-import { WebPortal, LoginError } from "https://cdn.jsdelivr.net/npm/jsjiit@0.0.23/dist/jsjiit.esm.js";
+import {
+  WebPortal,
+  LoginError,
+} from "https://cdn.jsdelivr.net/npm/jsjiit@0.0.26/dist/jsjiit.esm.js";
 import { serialize_payload } from "@/lib/jiitCrypto";
-
+import { proxy_url } from "@/lib/api";
 import { ArtificialWebPortal } from "./components/scripts/artificialW";
-
+import { saveProfileDataToCache } from '@/components/scripts/cache'
 import Feedback from "./components/Feedback";
 import CGPATargetCalculator from "./components/CGPATargetCalculator";
 
-const w = new WebPortal();
+const w = new WebPortal({ apiUrl: proxy_url, useProxy: false });
 
-function AuthenticatedApp({ w, setIsAuthenticated, messMenuOpen, onMessMenuChange, attendanceGoal, setAttendanceGoal }) {
+function AuthenticatedApp({
+  w,
+  setIsAuthenticated,
+  messMenuOpen,
+  onMessMenuChange,
+  attendanceGoal,
+  setAttendanceGoal,
+}) {
   const navigate = useNavigate();
-  const [touchStart, setTouchStart] = useState(null);
-  const [touchEnd, setTouchEnd] = useState(null);
-  const [touchStartY, setTouchStartY] = useState(null);
-  const [touchEndY, setTouchEndY] = useState(null);
+  const touchStartX = useRef(null);
+  const touchEndX = useRef(null);
+  const touchStartY = useRef(null);
+  const touchEndY = useRef(null);
   const [attendanceData, setAttendanceData] = useState({});
   const [attendanceSemestersData, setAttendanceSemestersData] = useState(null);
   const [activeAttendanceTab, setActiveAttendanceTab] = useState("overview");
@@ -66,11 +78,9 @@ function AuthenticatedApp({ w, setIsAuthenticated, messMenuOpen, onMessMenuChang
       if (!profileData) {
         try {
           const data = await w.get_personal_info();
+          console.log("Profile Data:", data);
           setProfileData(data);
-          localStorage.setItem('profileData', JSON.stringify({
-            studentname: data?.generalinformation?.studentname,
-            imagepath: data?.["photo&signature"]?.photo
-          }));
+          try { await saveProfileDataToCache(data); } catch (e) { }
         } catch (error) {
           console.error("Failed to fetch profile data in App:", error);
         }
@@ -117,77 +127,92 @@ function AuthenticatedApp({ w, setIsAuthenticated, messMenuOpen, onMessMenuChang
   const minSwipeDistance = 75;
 
   const onTouchStart = (e) => {
-    setTouchEnd(null);
-    setTouchStart(e.touches[0].clientX);
-    setTouchStartY(e.touches[0].clientY);
+    const tgt = e.target;
+    if (tgt && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(tgt.tagName))
+      return;
+    const t = e.touches && e.touches[0];
+    if (!t) return;
+    touchStartX.current = t.clientX;
+    touchStartY.current = t.clientY;
+    touchEndX.current = null;
+    touchEndY.current = null;
   };
 
   const onTouchMove = (e) => {
-    setTouchEnd(e.touches[0].clientX);
-    setTouchEndY(e.touches[0].clientY);
+    const t = e.touches && e.touches[0];
+    if (!t) return;
+    touchEndX.current = t.clientX;
+    touchEndY.current = t.clientY;
   };
 
   const location = useLocation();
-  const [transitionDirection, setTransitionDirection] = useState('forward');
+  const [transitionDirection, setTransitionDirection] = useState("forward");
 
-  const onTouchEndWithTransition = () => {
-    if (!touchStart || !touchEnd || !touchStartY || !touchEndY) return;
-
-    const swipeEnabled = localStorage.getItem('swipeEnabled') !== 'false';
+  const onTouchEndWithTransition = (e) => {
+    const swipeEnabled = getSwipeEnabledFromCache();
     const isDesktop = window.innerWidth >= 768;
-    if (!swipeEnabled || isDesktop) {
-      setTouchStart(null);
-      setTouchEnd(null);
-      setTouchStartY(null);
-      setTouchEndY(null);
-      return;
+    if (!swipeEnabled || isDesktop) return;
+
+    let endX = null,
+      endY = null;
+    if (e && e.changedTouches && e.changedTouches[0]) {
+      endX = e.changedTouches[0].clientX;
+      endY = e.changedTouches[0].clientY;
     }
-
-    const distanceX = Math.abs(touchStart - touchEnd);
-    const distanceY = Math.abs(touchStartY - touchEndY);
-
-    if (distanceY > distanceX) {
-      setTouchStart(null);
-      setTouchEnd(null);
-      setTouchStartY(null);
-      setTouchEndY(null);
+    endX = endX || touchEndX.current;
+    endY = endY || touchEndY.current;
+    const startX = touchStartX.current;
+    const startY = touchStartY.current;
+    if (startX == null || endX == null || startY == null || endY == null)
       return;
-    }
 
-    const distance = touchStart - touchEnd;
-    const isLeftSwipe = distance > minSwipeDistance;
-    const isRightSwipe = distance < -minSwipeDistance;
+    const distanceX = Math.abs(startX - endX);
+    const distanceY = Math.abs(startY - endY);
 
-    const routes = ['/attendance', '/grades', '/exams', '/subjects', '/profile'];
-    const currentPath = window.location.hash.replace('#', '');
+    if (distanceY > distanceX) return;
+
+    const delta = startX - endX;
+    const isLeftSwipe = delta > minSwipeDistance;
+    const isRightSwipe = delta < -minSwipeDistance;
+
+    const routes = [
+      "/attendance",
+      "/grades",
+      "/exams",
+      "/subjects",
+      "/profile",
+    ];
+    const currentPath = window.location.hash.replace("#", "");
     const currentIndex = routes.indexOf(currentPath);
 
     if (isLeftSwipe && currentIndex < routes.length - 1) {
-      setTransitionDirection('forward');
+      setTransitionDirection("forward");
       navigate(routes[currentIndex + 1]);
-    }
-
-    if (isRightSwipe && currentIndex > 0) {
-      setTransitionDirection('reverse');
+    } else if (isRightSwipe && currentIndex > 0) {
+      setTransitionDirection("reverse");
       navigate(routes[currentIndex - 1]);
     }
 
-    setTouchStart(null);
-    setTouchEnd(null);
-    setTouchStartY(null);
-    setTouchEndY(null);
+    touchStartX.current = null;
+    touchEndX.current = null;
+    touchStartY.current = null;
+    touchEndY.current = null;
   };
 
   return (
     <div className="relative">
-      <Navbar w={w} messMenuOpen={messMenuOpen} onMessMenuChange={onMessMenuChange} />
+      <Navbar
+        w={w}
+        messMenuOpen={messMenuOpen}
+        onMessMenuChange={onMessMenuChange}
+      />
       <div
-        className="h-screen flex flex-col"
+        className="min-h-screen flex flex-col"
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEndWithTransition}
       >
-        <div className="flex-none z-30 bg-background -mt-[2px] md:ml-64">
+        <div className="flex-none z-30 bg-background md:ml-64">
           <Header
             setIsAuthenticated={setIsAuthenticated}
             messMenuOpen={messMenuOpen}
@@ -202,60 +227,103 @@ function AuthenticatedApp({ w, setIsAuthenticated, messMenuOpen, onMessMenuChang
             <CSSTransition
               key={location.pathname}
               timeout={300}
-              classNames={`page-transition${transitionDirection === 'reverse' ? '-reverse' : ''}`}
+              classNames={`page-transition${transitionDirection === "reverse" ? "-reverse" : ""}`}
               unmountOnExit
             >
               <div className="w-full min-h-full">
                 <Routes location={location}>
-                  <Route path="/" element={<Navigate to={(() => {
-                    let targetTab = localStorage.getItem('defaultTab') || '/attendance';
-                    if (targetTab === 'auto') {
-                      const examStartDate = localStorage.getItem('examStartDate');
-                      const examEndDate = localStorage.getItem('examEndDate');
-                      if (examStartDate && examEndDate) {
-                        const now = new Date();
-                        const examStart = new Date(examStartDate);
-                        const examEnd = new Date(examEndDate);
-                        const tomorrow = new Date(now);
-                        tomorrow.setDate(tomorrow.getDate() + 1);
-                        const isTomorrowExamStart = tomorrow.toDateString() === examStart.toDateString();
-                        const isInExamPeriod = now >= examStart && now <= examEnd;
-                        if (isTomorrowExamStart || isInExamPeriod) {
-                          return '/exams';
-                        }
-                      }
-                      return '/attendance';
+                  <Route
+                    path="/"
+                    element={
+                      <Navigate
+                        to={(() => {
+                          let targetTab =
+                            getDefaultTab() || "/attendance";
+                          if (targetTab === "auto") {
+                            const examStartDate = getExamStartDate();
+                            const examEndDate = getExamEndDate();
+                            if (examStartDate && examEndDate) {
+                              const now = new Date();
+                              const examStart = new Date(examStartDate);
+                              const examEnd = new Date(examEndDate);
+                              const tomorrow = new Date(now);
+                              tomorrow.setDate(tomorrow.getDate() + 1);
+                              const isTomorrowExamStart =
+                                tomorrow.toDateString() ===
+                                examStart.toDateString();
+                              const isInExamPeriod =
+                                now >= examStart && now <= examEnd;
+                              if (isTomorrowExamStart || isInExamPeriod) {
+                                return "/exams";
+                              }
+                            }
+                            return "/attendance";
+                          }
+                          const validRoutes = [
+                            "/attendance",
+                            "/grades",
+                            "/exams",
+                            "/subjects",
+                            "/profile",
+                          ];
+                          return validRoutes.includes(targetTab)
+                            ? targetTab
+                            : "/attendance";
+                        })()}
+                        replace
+                      />
                     }
-                    const validRoutes = ['/attendance', '/grades', '/exams', '/subjects', '/profile'];
-                    return validRoutes.includes(targetTab) ? targetTab : '/attendance';
-                  })()} replace />} />
-                  <Route path="/login" element={<Navigate to={(() => {
-                    let targetTab = localStorage.getItem('defaultTab') || '/attendance';
-                    if (targetTab === 'auto') {
-                      const examStartDate = localStorage.getItem('examStartDate');
-                      const examEndDate = localStorage.getItem('examEndDate');
-                      if (examStartDate && examEndDate) {
-                        const now = new Date();
-                        const examStart = new Date(examStartDate);
-                        const examEnd = new Date(examEndDate);
-                        const tomorrow = new Date(now);
-                        tomorrow.setDate(tomorrow.getDate() + 1);
-                        const isTomorrowExamStart = tomorrow.toDateString() === examStart.toDateString();
-                        const isInExamPeriod = now >= examStart && now <= examEnd;
-                        if (isTomorrowExamStart || isInExamPeriod) {
-                          return '/exams';
-                        }
-                      }
-                      return '/attendance';
+                  />
+                  <Route
+                    path="/login"
+                    element={
+                      <Navigate
+                        to={(() => {
+                          let targetTab =
+                            getDefaultTab() || "/attendance";
+                          if (targetTab === "auto") {
+                            const examStartDate =
+                              getExamStartDate();
+                            const examEndDate =
+                              getExamEndDate();
+                            if (examStartDate && examEndDate) {
+                              const now = new Date();
+                              const examStart = new Date(examStartDate);
+                              const examEnd = new Date(examEndDate);
+                              const tomorrow = new Date(now);
+                              tomorrow.setDate(tomorrow.getDate() + 1);
+                              const isTomorrowExamStart =
+                                tomorrow.toDateString() ===
+                                examStart.toDateString();
+                              const isInExamPeriod =
+                                now >= examStart && now <= examEnd;
+                              if (isTomorrowExamStart || isInExamPeriod) {
+                                return "/exams";
+                              }
+                            }
+                            return "/attendance";
+                          }
+                          const validRoutes = [
+                            "/attendance",
+                            "/grades",
+                            "/exams",
+                            "/subjects",
+                            "/profile",
+                          ];
+                          return validRoutes.includes(targetTab)
+                            ? targetTab
+                            : "/attendance";
+                        })()}
+                        replace
+                      />
                     }
-                    const validRoutes = ['/attendance', '/grades', '/exams', '/subjects', '/profile'];
-                    return validRoutes.includes(targetTab) ? targetTab : '/attendance';
-                  })()} replace />} />
+                  />
                   <Route
                     path="/attendance"
                     element={
                       <Attendance
                         w={w}
+                        serialize_payload={serialize_payload}
                         attendanceData={attendanceData}
                         setAttendanceData={setAttendanceData}
                         semestersData={attendanceSemestersData}
@@ -388,10 +456,7 @@ function AuthenticatedApp({ w, setIsAuthenticated, messMenuOpen, onMessMenuChang
                       />
                     }
                   />
-                  <Route
-                    path="/feedback"
-                    element={<Feedback w={w} />}
-                  />
+                  <Route path="/feedback" element={<Feedback w={w} serialize_payload={serialize_payload} />} />
                   <Route
                     path="/gpa-calculator"
                     element={<CGPATargetCalculator w={w} />}
@@ -413,11 +478,11 @@ function LoginWrapper({ onLoginSuccess, w }) {
     const portal = webPortal || w;
     onLoginSuccess(portal);
     setTimeout(() => {
-      let targetTab = localStorage.getItem('defaultTab') || '/attendance';
+      let targetTab = getDefaultTab() || "/attendance";
 
-      if (targetTab === 'auto') {
-        const examStartDate = localStorage.getItem('examStartDate');
-        const examEndDate = localStorage.getItem('examEndDate');
+      if (targetTab === "auto") {
+        const examStartDate = getExamStartDate();
+        const examEndDate = getExamEndDate();
 
         if (examStartDate && examEndDate) {
           const now = new Date();
@@ -426,33 +491,45 @@ function LoginWrapper({ onLoginSuccess, w }) {
           const tomorrow = new Date(now);
           tomorrow.setDate(tomorrow.getDate() + 1);
 
-          const isTomorrowExamStart = tomorrow.toDateString() === examStart.toDateString();
+          const isTomorrowExamStart =
+            tomorrow.toDateString() === examStart.toDateString();
           const isInExamPeriod = now >= examStart && now <= examEnd;
 
           if (isTomorrowExamStart || isInExamPeriod) {
-            targetTab = '/exams';
+            targetTab = "/exams";
           } else {
-            targetTab = '/attendance';
+            targetTab = "/attendance";
           }
         } else {
-          targetTab = '/attendance';
+          targetTab = "/attendance";
         }
       }
 
-      const validRoutes = ['/attendance', '/grades', '/exams', '/subjects', '/profile'];
+      const validRoutes = [
+        "/attendance",
+        "/grades",
+        "/exams",
+        "/subjects",
+        "/profile",
+      ];
       if (!validRoutes.includes(targetTab)) {
-        console.warn(`Invalid default tab: ${targetTab}, falling back to /attendance`);
-        targetTab = '/attendance';
+        console.warn(
+          `Invalid default tab: ${targetTab}, falling back to /attendance`,
+        );
+        targetTab = "/attendance";
       }
       try {
         navigate(targetTab, { replace: true });
       } catch (error) {
-        console.error('Navigation failed, falling back to /attendance:', error);
-        navigate('/attendance', { replace: true });
+        console.error("Navigation failed, falling back to /attendance:", error);
+        navigate("/attendance", { replace: true });
       }
       setTimeout(() => {
-        if (window.location.hash.includes('/login') || window.location.hash === '#/') {
-          navigate('/attendance', { replace: true });
+        if (
+          window.location.hash.includes("/login") ||
+          window.location.hash === "#/"
+        ) {
+          navigate("/attendance", { replace: true });
         }
       }, 2000);
     }, 100);
@@ -466,74 +543,75 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [currentWebPortal, setCurrentWebPortal] = useState(w);
+  const [showOfflinePrompt, setShowOfflinePrompt] = useState(false);
   const [messMenuOpen, setMessMenuOpen] = useState(() => {
-    return localStorage.getItem("messMenuOpen") === "true";
+    return getMessMenuOpenFromCache();
   });
 
   const handleMessMenuChange = (open) => {
     setMessMenuOpen(open);
-    localStorage.setItem("messMenuOpen", open.toString());
+    persistMessMenuOpen(open);
   };
 
   const [attendanceGoal, setAttendanceGoal] = useState(() => {
-    const savedGoal = localStorage.getItem("attendanceGoal");
+    const savedGoal = getAttendanceGoalFromCache();
     return savedGoal ? parseInt(savedGoal) : 75;
   });
 
   useEffect(() => {
-    localStorage.setItem("attendanceGoal", attendanceGoal.toString());
+    persistAttendanceGoal(attendanceGoal);
   }, [attendanceGoal]);
 
   useEffect(() => {
     const handleStorageChange = (e) => {
-      if (e.key === 'attendanceGoal') {
+      if (e.key === "attendanceGoal") {
         const newValue = e.newValue ? parseInt(e.newValue) : 75;
         setAttendanceGoal(newValue);
       }
     };
 
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
   }, []);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
-      localStorage.removeItem("messMenuOpen");
+      persistMessMenuOpen(false);
     };
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
+      if (document.visibilityState === "hidden") {
         setMessMenuOpen(false);
-        localStorage.removeItem("messMenuOpen");
+        persistMessMenuOpen(false);
       }
     };
 
     const handleBlur = () => {
       setMessMenuOpen(false);
-      localStorage.removeItem("messMenuOpen");
+      persistMessMenuOpen(false);
     };
 
     const handleFocus = () => {
       setMessMenuOpen(false);
-      localStorage.removeItem("messMenuOpen");
+      persistMessMenuOpen(false);
     };
 
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('blur', handleBlur);
-    window.addEventListener('focus', handleFocus);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("focus", handleFocus);
 
     return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('blur', handleBlur);
-      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("focus", handleFocus);
     };
   }, []);
 
   useEffect(() => {
-    const username = localStorage.getItem("username");
-    const password = localStorage.getItem("password");
+    const username = getUsername();
+    const password = getPassword();
 
     const performLogin = async () => {
       try {
@@ -546,17 +624,7 @@ function App() {
         }
       } catch (error) {
         console.error("Login failed:", error);
-        const keys = Object.keys(localStorage);
-        const hasCachedData = keys.some(key =>
-          key.startsWith('attendance-') ||
-          key.startsWith('grades-') ||
-          key.startsWith('subject-') ||
-          key === 'latestSemester' ||
-          key === 'semestersData' ||
-          key === 'gradeCardSemesters' ||
-          key === 'mess-menu' ||
-          key === 'profileData'
-        );
+        const hasCachedData = hasAnyPortalData();
 
         if (hasCachedData) {
           setIsAuthenticated(true);
@@ -566,11 +634,11 @@ function App() {
           if (
             error instanceof LoginError &&
             error.message.includes(
-              "JIIT Web Portal server is temporarily unavailable"
+              "JIIT Web Portal server is temporarily unavailable",
             )
           ) {
             setError(
-              "JIIT Web Portal server is temporarily unavailable. Please try again later."
+              "JIIT Web Portal server is temporarily unavailable. Please try again later.",
             );
           } else if (
             error instanceof LoginError &&
@@ -578,7 +646,9 @@ function App() {
           ) {
             setError("JIIT Web Portal server is temporarily unavailable.");
           } else {
-            setError("Login failed. Please check your credentials and try again.");
+            setError(
+              "Login failed. Please check your credentials and try again.",
+            );
             setIsAuthenticated(false);
           }
         }
@@ -590,48 +660,69 @@ function App() {
     performLogin();
   }, []);
 
+  useEffect(() => {
+    let t;
+    if (isLoading) {
+      t = setTimeout(() => setShowOfflinePrompt(true), 10000);
+    } else {
+      setShowOfflinePrompt(false);
+    }
+    return () => clearTimeout(t);
+  }, [isLoading]);
+
   if (isLoading) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-background text-foreground">
-        <div className="flex flex-col items-center">
-          <Loader2 className="w-8 h-8 animate-spin mb-2" />
-          <p className="text-lg font-semibold mb-1">
-            Signing in...
-          </p>
-          <p className="text-sm mb-4">
-            Welcome to JP Portal
-          </p>
-          <div className="bg-card/50 border border-border rounded-xl p-4 shadow-lg flex flex-col items-center gap-3 mb-4">
-            <span className="text-xs text-muted-foreground mb-1">Quick Access</span>
-            <div className="flex flex-wrap gap-2 items-center justify-center">
-              <MessMenu open={messMenuOpen} onOpenChange={handleMessMenuChange}>
-                <span className="flex items-center justify-center px-6 py-2 bg-green-600/20 border border-green-500/30 text-green-400 hover:bg-green-600/30 hover:text-green-300 transition-colors rounded-lg text-sm font-medium gap-2 cursor-pointer">
-                  <UtensilsCrossed size={18} /> Mess Menu
-                </span>
-              </MessMenu>
-              <a
-                href="#/academic-calendar"
-                onClick={(e) => {
-                  try {
-                    e.preventDefault();
-                    const target = '#/academic-calendar';
-                    if (window.location.hash !== target) {
-                      window.location.hash = target;
-                      window.dispatchEvent(new Event('hashchange'));
+      <ThemeProvider>
+        <div className="min-h-screen flex flex-col items-center justify-center bg-background text-foreground">
+          <div className="flex flex-col items-center">
+            <Loader2 className="w-8 h-8 animate-spin mb-2" />
+            <p className="text-lg font-semibold mb-1">Signing in...</p>
+            <p className="text-sm mb-4">Welcome to JP Portal</p>
+            <div className="bg-card/50 border border-border rounded-xl p-4 shadow-lg flex flex-col items-center gap-3 mb-4">
+              <span className="text-xs text-muted-foreground mb-1">
+                Quick Access
+              </span>
+              <div className="flex flex-wrap gap-2 items-center justify-center">
+                <MessMenu
+                  open={messMenuOpen}
+                  onOpenChange={handleMessMenuChange}
+                >
+                  <span className="flex items-center justify-center px-6 py-2 bg-primary/10 border border-border text-primary hover:bg-primary/20 hover:text-primary-foreground transition-colors rounded-lg text-sm font-medium gap-2 cursor-pointer">
+                    <UtensilsCrossed size={18} /> Mess Menu
+                  </span>
+                </MessMenu>
+                <a
+                  href="#/academic-calendar"
+                  onClick={(e) => {
+                    try {
+                      window.location.hash = "#/academic-calendar";
+                    } catch (err) {
+                      window.location.href = "#/academic-calendar";
                     }
-                  } catch (err) {
-                    window.location.href = '#/academic-calendar';
-                  }
-                }}
-                className="flex w-full sm:w-auto items-center justify-center px-4 py-2 bg-blue-600/20 border border-blue-500/30 text-blue-400 hover:bg-blue-600/30 hover:text-blue-300 transition-colors rounded-lg text-sm font-medium gap-2"
-              >
-                <CalendarIcon size={18} /> Academic Calendar
-              </a>
-              <InstallPWA />
+                  }}
+                  className="flex w-full sm:w-auto items-center justify-center px-4 py-2 bg-primary/10 border border-border text-primary hover:bg-primary/20 hover:text-primary-foreground transition-colors rounded-lg text-sm font-medium gap-2"
+                >
+                  <CalendarIcon size={18} /> Academic Calendar
+                </a>
+                <InstallPWA />
+                {showOfflinePrompt && (
+                  <button
+                    onClick={() => {
+                      setCurrentWebPortal(new ArtificialWebPortal());
+                      setIsAuthenticated(true);
+                      setIsLoading(false);
+                      setShowOfflinePrompt(false);
+                    }}
+                    className="px-4 py-2 bg-secondary/10 border border-border text-secondary hover:bg-secondary/20 transition-colors rounded-lg text-sm font-medium"
+                  >
+                    Offline Mode
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </ThemeProvider>
     );
   }
 
@@ -639,6 +730,13 @@ function App() {
     <HelmetProvider>
       <ThemeProvider>
         <Router>
+          <Toaster 
+            position="top-right" 
+            richColors 
+            expand 
+            closeButton
+            theme="system"
+          />
           <div className="min-h-screen bg-background text-foreground transition-colors duration-300">
             <Routes>
               <Route
@@ -662,7 +760,8 @@ function App() {
                   </>
                 }
               />
-              {!isAuthenticated || (isAuthenticated && currentWebPortal === w && !w.session) ? (
+              {!isAuthenticated ||
+              (isAuthenticated && currentWebPortal === w && !w.session) ? (
                 <Route
                   path="*"
                   element={

@@ -1,15 +1,21 @@
 import { useState, useEffect } from "react"
-import { useNavigate } from "react-router-dom"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
-import { Calculator, Plus, Trash2, BookOpen, GraduationCap, Loader2, ArrowLeft, Target, TrendingUp, Award } from "lucide-react"
+import { Plus, Trash2, BookOpen, GraduationCap, Loader2, Target, TrendingUp, Award } from "lucide-react"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { getFromCache } from "@/components/scripts/cache"
+import { getCgpaCalculatorSemesters, setCgpaCalculatorSemesters, getCgpaCalculatorTargetCgpa, setCgpaCalculatorTargetCgpa, getCgpaCalculatorSelectedSemester, setCgpaCalculatorSelectedSemester, getSubjectSemestersData, setSubjectSemestersData } from '@/components/scripts/cache' 
+import { getUsername } from '@/components/scripts/cache' 
 import { Helmet } from 'react-helmet-async'
+import {
+  calculateSGPA as calcSGPA,
+  calculateCGPA as calcCGPA,
+  calculateRequiredSGPA as calcReqSGPA,
+  gradePointMap
+} from "@/lib/math"
 
 export default function CGPATargetCalculator({ w }) {
-  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("sgpa");
 
   const [subjectSemesters, setSubjectSemesters] = useState([]);
@@ -51,11 +57,10 @@ export default function CGPATargetCalculator({ w }) {
           console.warn('Failed to fetch sgpa/cgpa from portal for CGPA calculator, will try cache:', err);
         }
 
-        const cached = localStorage.getItem('cgpaCalculatorSemesters');
+        const cached = getCgpaCalculatorSemesters();
         if (cached) {
           try {
-            const parsed = JSON.parse(cached);
-            if (Array.isArray(parsed) && parsed.length > 0) setCgpaSemesters(parsed);
+            if (Array.isArray(cached) && cached.length > 0) setCgpaSemesters(cached);
           } catch (e) { }
         }
       } catch (error) {
@@ -68,42 +73,20 @@ export default function CGPATargetCalculator({ w }) {
   }, [w]);
 
   useEffect(() => {
-    localStorage.setItem('cgpaCalculatorSemesters', JSON.stringify(cgpaSemesters));
+    setCgpaCalculatorSemesters(cgpaSemesters);
   }, [cgpaSemesters]);
 
-  useEffect(() => {
-    if (!selectedSemester) {
-      const cachedSgpaSubjects = localStorage.getItem('cgpaCalculatorSgpaSubjects');
-      if (cachedSgpaSubjects) {
-        try {
-          const parsed = JSON.parse(cachedSgpaSubjects);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setSgpaSubjects(parsed);
-          }
-        } catch (e) {
-          console.error('Failed to parse cached SGPA subjects:', e);
-        }
-      }
-    }
-  }, [selectedSemester]);
 
   useEffect(() => {
-    if (sgpaSubjects.length > 0) {
-      localStorage.setItem('cgpaCalculatorSgpaSubjects', JSON.stringify(sgpaSubjects));
-    }
-  }, [sgpaSubjects]);
-
-  useEffect(() => {
-    const cachedTargetCgpa = localStorage.getItem('cgpaCalculatorTargetCgpa');
+    const cachedTargetCgpa = getCgpaCalculatorTargetCgpa();
     if (cachedTargetCgpa) {
       setTargetCgpa(cachedTargetCgpa);
     }
 
-    const cachedSelectedSemester = localStorage.getItem('cgpaCalculatorSelectedSemester');
+    const cachedSelectedSemester = getCgpaCalculatorSelectedSemester();
     if (cachedSelectedSemester) {
       try {
-        const parsed = JSON.parse(cachedSelectedSemester);
-        setSelectedSemester(parsed);
+        setSelectedSemester(cachedSelectedSemester);
       } catch (e) {
         console.error('Failed to parse cached selected semester:', e);
       }
@@ -111,12 +94,12 @@ export default function CGPATargetCalculator({ w }) {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('cgpaCalculatorTargetCgpa', targetCgpa);
+    setCgpaCalculatorTargetCgpa(targetCgpa);
   }, [targetCgpa]);
 
   useEffect(() => {
     if (selectedSemester) {
-      localStorage.setItem('cgpaCalculatorSelectedSemester', JSON.stringify(selectedSemester));
+      setCgpaCalculatorSelectedSemester(selectedSemester);
     }
   }, [selectedSemester]);
 
@@ -151,10 +134,9 @@ export default function CGPATargetCalculator({ w }) {
       }
 
       try {
-        const cached = localStorage.getItem('subjectSemestersData');
+        const cached = getSubjectSemestersData();
         if (cached) {
-          const parsed = JSON.parse(cached);
-          setSubjectSemesters(parsed || []);
+          setSubjectSemesters(cached || []);
         }
       } catch (err) {
         console.error('Failed to load cached subject semesters:', err);
@@ -179,7 +161,7 @@ export default function CGPATargetCalculator({ w }) {
         const processedSubjects = processSubjectsForSGPA(subjects.subjects);
 
         try {
-          const username = w?.username || "user";
+          const username = w?.username || getUsername() || "user";
           const cacheKey = `marks-${semester.registration_code}-${username}`;
           const cached = await getFromCache(cacheKey);
           const marksMap = {};
@@ -193,27 +175,10 @@ export default function CGPATargetCalculator({ w }) {
             });
           }
 
-          const cachedSgpaSubjects = localStorage.getItem('cgpaCalculatorSgpaSubjects');
-          const gradeMap = {};
-          if (cachedSgpaSubjects) {
-            try {
-              const parsed = JSON.parse(cachedSgpaSubjects);
-              if (Array.isArray(parsed)) {
-                parsed.forEach(subject => {
-                  if (subject.code) {
-                    gradeMap[subject.code] = subject.grade;
-                  }
-                });
-              }
-            } catch (e) {
-              console.error('Failed to parse cached grades:', e);
-            }
-          }
-
           const withMarksAndGrades = processedSubjects.map((s) => ({
             ...s,
             marks: marksMap[s.code] || null,
-            grade: gradeMap[s.code] || s.grade
+            grade: s.grade
           }));
           setSgpaSubjects(withMarksAndGrades);
         } catch (e) {
@@ -246,9 +211,7 @@ export default function CGPATargetCalculator({ w }) {
     return Object.values(groupedSubjects);
   };
 
-  const gradePointMap = {
-    "A+": 10, "A": 9, "B+": 8, "B": 7, "C+": 6, "C": 5, "D": 4, "F": 0
-  };
+
 
   const gradeOptions = ["A+", "A", "B+", "B", "C+", "C", "D", "F"];
 
@@ -261,18 +224,12 @@ export default function CGPATargetCalculator({ w }) {
   };
 
   const calculateSGPA = () => {
-    let totalPoints = 0;
-    let totalCredits = 0;
-
-    sgpaSubjects.forEach(subject => {
-      if (subject.grade && subject.credits > 0) {
-        totalPoints += subject.gradePoints * subject.credits;
-        totalCredits += subject.credits;
-      }
-    });
-
-    if (totalCredits === 0) return "-";
-    return (totalPoints / totalCredits).toFixed(2);
+    return calcSGPA(
+      sgpaSubjects.map(s => ({
+        credits: s.credits,
+        grade: s.grade
+      }))
+    );
   };
 
   const handleSemesterChange = (semesterId) => {
@@ -315,74 +272,56 @@ export default function CGPATargetCalculator({ w }) {
 
   const calculateProjectedCGPA = () => {
     const currentSgpa = parseFloat(calculateSGPA());
-    if (isNaN(currentSgpa) || currentSgpa === 0) return "-";
+    if (isNaN(currentSgpa)) return "-";
 
-    let currentCredits = 0;
-    sgpaSubjects.forEach(subject => {
-      if (subject.credits > 0) {
-        currentCredits += subject.credits;
-      }
-    });
-
+    const currentCredits = sgpaSubjects.reduce((acc, s) => acc + (s.credits > 0 ? s.credits : 0), 0);
     if (currentCredits === 0) return "-";
 
-    let previousGradePoints = 0;
-    let previousCredits = 0;
+    const pastSemesters = (Array.isArray(fetchedSemesters) ? fetchedSemesters : [])
+      .map(sem => ({
+        sgpa: parseFloat(sem.sgpa),
+        credits: parseFloat(sem.totalcoursecredit)
+      }))
+      .filter(s => !isNaN(s.sgpa) && !isNaN(s.credits));
 
-    if (Array.isArray(fetchedSemesters) && fetchedSemesters.length > 0) {
-      fetchedSemesters.forEach(sem => {
-        const sgpa = parseFloat(sem.sgpa);
-        const credits = parseFloat(sem.totalcoursecredit);
-        if (!isNaN(sgpa) && !isNaN(credits)) {
-          previousGradePoints += sgpa * credits;
-          previousCredits += credits;
-        }
-      });
-    }
+    const allSemesters = [
+      ...pastSemesters,
+      { sgpa: currentSgpa, credits: currentCredits }
+    ];
 
-    const totalGradePoints = previousGradePoints + (currentSgpa * currentCredits);
-    const totalCredits = previousCredits + currentCredits;
-
-    if (totalCredits === 0) return "-";
-    return (totalGradePoints / totalCredits).toFixed(2);
+    const projected = calcCGPA(allSemesters);
+    return isNaN(projected) ? "-" : projected.toFixed(2);
   };
 
   const calculateCGPA = () => {
-    let totalPoints = 0;
-    let totalCredits = 0;
-    cgpaSemesters.forEach(({ g, c }) => {
-      const sgpa = parseFloat(g);
-      const credits = parseFloat(c);
-      if (!isNaN(sgpa) && !isNaN(credits)) {
-        totalPoints += sgpa * credits;
-        totalCredits += credits;
-      }
-    });
-    if (totalCredits === 0) return "-";
-    const cgpa = totalPoints / totalCredits;
-    const bounded = Math.min(10, Math.max(0, cgpa));
-    return bounded.toFixed(2);
+    const semesters = cgpaSemesters.map(s => ({
+      sgpa: parseFloat(s.g),
+      credits: parseFloat(s.c)
+    })).filter(s => !isNaN(s.sgpa) && !isNaN(s.credits));
+
+    if (semesters.length === 0) return "-";
+
+    const val = calcCGPA(semesters);
+    return isNaN(val) ? "-" : val.toFixed(2);
   };
 
   const calculateRequiredSGPA = () => {
     const t = parseFloat(targetCgpa);
     if (isNaN(t)) return "-";
-    let prevGradePoints = 0;
-    let prevCredits = 0;
-    if (Array.isArray(fetchedSemesters) && fetchedSemesters.length > 0) {
-      fetchedSemesters.forEach(sem => {
-        const sgpa = parseFloat(sem.sgpa);
-        const credits = parseFloat(sem.totalcoursecredit);
-        if (!isNaN(sgpa) && !isNaN(credits)) {
-          prevGradePoints += sgpa * credits;
-          prevCredits += credits;
-        }
-      });
-    }
+
+    const pastSemesters = (Array.isArray(fetchedSemesters) ? fetchedSemesters : [])
+      .map(sem => ({
+        sgpa: parseFloat(sem.sgpa),
+        credits: parseFloat(sem.totalcoursecredit)
+      }))
+      .filter(s => !isNaN(s.sgpa) && !isNaN(s.credits));
+
     const nextIndex = Array.isArray(fetchedSemesters) ? fetchedSemesters.length : 0;
     const nextCredits = parseFloat(cgpaSemesters[nextIndex]?.c);
+
     if (isNaN(nextCredits) || nextCredits <= 0) return "-";
-    const required = (t * (prevCredits + nextCredits) - prevGradePoints) / nextCredits;
+
+    const required = calcReqSGPA(t, pastSemesters, nextCredits);
     if (!isFinite(required)) return "-";
     return required.toFixed(2);
   };
@@ -400,36 +339,25 @@ export default function CGPATargetCalculator({ w }) {
         <link rel="canonical" href="https://jportal2-0.vercel.app/#/gpa-calculator" />
       </Helmet>
       <div className="w-full max-w-5xl mx-auto bg-background text-foreground rounded-lg overflow-hidden">
-        <div className="sticky top-0 z-10 bg-background/95 backdrop-blur p-4 md:p-5 border-b border-border shadow-lg">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3 text-lg md:text-xl font-bold text-foreground">
-              <div className="p-2 bg-primary/10 rounded-lg">
-                <Calculator className="w-5 h-5 md:w-6 md:h-6 text-primary" />
-              </div>
-              GPA Calculator
-            </div>
-
-          </div>
-        </div>
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid grid-cols-2 mx-4 md:mx-6 mt-2 md:mt-2 bg-muted h-11 md:h-13 rounded-xl border border-border">
+          <TabsList className="grid grid-cols-2 mx-4 md:mx-6 mt-2">
             <TabsTrigger
               value="sgpa"
-              className="flex items-center gap-2 text-xs md:text-sm font-semibold data-[state=active]:bg-background data-[state=active]:text-foreground text-muted-foreground hover:text-foreground transition-all rounded-lg m-1"
+              className="flex items-center gap-2"
             >
               <BookOpen className="w-4 h-4" />
               SGPA Calculator
             </TabsTrigger>
             <TabsTrigger
               value="cgpa"
-              className="flex items-center gap-2 text-xs md:text-sm font-semibold data-[state=active]:bg-background data-[state=active]:text-foreground text-muted-foreground hover:text-foreground transition-all rounded-lg m-1"
+              className="flex items-center gap-2"
             >
               <GraduationCap className="w-4 h-4" />
               CGPA Calculator
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="sgpa" className="max-h-[70vh] min-h-[300px] md:min-h-[350px] overflow-y-auto px-4 md:px-6 space-y-4 md:space-y-5 py-2">
+          <TabsContent value="sgpa" className="min-h-[300px] md:min-h-[350px] overflow-y-auto px-4 md:px-6 space-y-4 md:space-y-5 py-2">
             <div className="space-y-3 md:space-y-4">
               <Select onValueChange={handleSemesterChange} value={selectedSemester?.registration_id || ""}>
                 <SelectTrigger className="w-full md:max-w-sm h-11 md:h-12 bg-card text-foreground border-2 border-border hover:border-primary/50 text-sm rounded-lg transition-all shadow-lg">
@@ -472,7 +400,7 @@ export default function CGPATargetCalculator({ w }) {
                                 {subject.name}
                               </div>
                               <div className="flex items-center gap-3 text-xs md:text-sm">
-                                <span className="px-2 py-1 bg-muted text-muted-foreground rounded text-xs font-medium">{subject.code}</span>
+                                <span className="px-2 py-1 bg-muted text-muted-foreground rounded-lg text-xs font-medium">{subject.code}</span>
                                 <span className="text-muted-foreground">{subject.credits} credits</span>
                                 {subject.marks && (
                                   <span className="text-xs text-muted-foreground ml-2">
@@ -513,10 +441,10 @@ export default function CGPATargetCalculator({ w }) {
                           <span className="text-sm md:text-base text-muted-foreground font-medium">Calculated SGPA</span>
                         </div>
                         <span className={`text-2xl md:text-3xl font-bold ${calculateSGPA() !== "-" && parseFloat(calculateSGPA()) < 6
-                            ? "text-destructive"
-                            : "text-foreground"
+                          ? "text-destructive"
+                          : "text-foreground"
                           }`}>
-                          {calculateSGPA()}
+                          {calculateSGPA() !== "-" ? parseFloat(calculateSGPA()).toFixed(2) : "-"}
                         </span>
                       </div>
                       <div className="p-4 md:p-5 rounded-lg bg-card border border-border flex items-center justify-between w-full">
@@ -525,8 +453,8 @@ export default function CGPATargetCalculator({ w }) {
                           <span className="text-sm md:text-base text-muted-foreground font-medium">Projected CGPA</span>
                         </div>
                         <span className={`text-2xl md:text-3xl font-bold ${calculateProjectedCGPA() !== "-" && parseFloat(calculateProjectedCGPA()) < 6
-                            ? "text-destructive"
-                            : "text-foreground"
+                          ? "text-destructive"
+                          : "text-foreground"
                           }`}>
                           {calculateProjectedCGPA()}
                         </span>
@@ -544,7 +472,7 @@ export default function CGPATargetCalculator({ w }) {
             )}
           </TabsContent>
 
-          <TabsContent value="cgpa" className="max-h-[70vh] min-h-[300px] md:min-h-[350px] overflow-y-auto px-4 md:px-6 py-4 space-y-4 md:space-y-6">
+          <TabsContent value="cgpa" className="min-h-[300px] md:min-h-[350px] overflow-y-auto px-4 md:px-6 py-4 space-y-4 md:space-y-6">
             <div className="flex flex-col gap-4 md:gap-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="flex items-center gap-3 p-3 md:p-4 rounded-lg bg-card border border-border">
@@ -609,8 +537,8 @@ export default function CGPATargetCalculator({ w }) {
               <div className="grid gap-3 md:gap-4 grid-cols-1 md:grid-cols-2">
                 {cgpaSemesters.map((sem, i) => (
                   <div key={i} className={`bg-card rounded-lg p-3 md:p-4 border transition-colors ${i < (fetchedSemesters.length || 0)
-                      ? "border-primary/50 bg-primary/5"
-                      : "border-border hover:border-primary/30"
+                    ? "border-primary/50 bg-primary/5"
+                    : "border-border hover:border-primary/30"
                     }`}>
                     <div className="flex items-center gap-4">
                       <div className="flex-shrink-0">
@@ -633,8 +561,8 @@ export default function CGPATargetCalculator({ w }) {
                             value={sem.g}
                             onChange={e => handleCgpaChange(i, "g", e.target.value)}
                             className={`h-8 md:h-9 text-xs md:text-sm ${i < (fetchedSemesters.length || 0)
-                                ? "bg-primary/10 border-primary/30 text-foreground"
-                                : "bg-background border-border text-foreground"
+                              ? "bg-primary/10 border-primary/30 text-foreground"
+                              : "bg-background border-border text-foreground"
                               }`}
                             inputMode="decimal"
                             readOnly={i < (fetchedSemesters.length || 0)}
@@ -654,8 +582,8 @@ export default function CGPATargetCalculator({ w }) {
                             value={sem.c}
                             onChange={e => handleCgpaChange(i, "c", e.target.value)}
                             className={`h-8 md:h-9 text-xs md:text-sm ${i < (fetchedSemesters.length || 0)
-                                ? "bg-primary/10 border-primary/30 text-foreground"
-                                : "bg-background border-border text-foreground"
+                              ? "bg-primary/10 border-primary/30 text-foreground"
+                              : "bg-background border-border text-foreground"
                               }`}
                             inputMode="decimal"
                             readOnly={i < (fetchedSemesters.length || 0)}
@@ -705,6 +633,8 @@ export default function CGPATargetCalculator({ w }) {
             </div>
           </TabsContent>
         </Tabs>
+        <div className="h-12 md:h-12" />
+
       </div>
     </>
   );

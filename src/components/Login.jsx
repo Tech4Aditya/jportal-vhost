@@ -6,11 +6,13 @@ import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { LoginError } from "https://cdn.jsdelivr.net/npm/jsjiit@0.0.23/dist/jsjiit.esm.js"
+import { LoginError } from "https://cdn.jsdelivr.net/npm/jsjiit@0.0.26/dist/jsjiit.esm.js"
 import { Lock, User, UtensilsCrossed, Calendar, Heart, Laugh, Eye, EyeOff, Smartphone } from "lucide-react"
+import InstallPWA from './InstallPWA'
 import MessMenu from "./MessMenu"
 import ThemeBtn from "./ui/ThemeBtn"
 import { ArtificialWebPortal } from "./scripts/artificialW"
+import { setCredentials, setUsername, getUsername, getPassword, hasCachedProfile, hasAnyAttendance, hasAnyGrades } from '@/components/scripts/cache' 
 
 const formSchema = z.object({
   enrollmentNumber: z.string({
@@ -28,9 +30,7 @@ export default function Login({ onLoginSuccess, w }) {
     credentials: null,
     canFallbackOffline: false,
   })
-  const [isFeatureOpen, setIsFeatureOpen] = useState(false)
-  const [deferredPrompt, setDeferredPrompt] = useState(null)
-  const [showInstall, setShowInstall] = useState(false)
+  const [hasCache, setHasCache] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
 
   const form = useForm({
@@ -51,8 +51,7 @@ export default function Login({ onLoginSuccess, w }) {
 
         await w.student_login(attemptedUsername, attemptedPassword)
 
-        localStorage.setItem("username", attemptedUsername)
-        localStorage.setItem("password", attemptedPassword)
+        setCredentials(attemptedUsername, attemptedPassword)
 
         setLoginStatus((prev) => ({
           ...prev,
@@ -65,10 +64,7 @@ export default function Login({ onLoginSuccess, w }) {
         const attemptedUsername = loginStatus.credentials?.enrollmentNumber || ''
         const isAuthError = error instanceof LoginError
 
-        const profileData = localStorage.getItem('profileData');
-        const attendanceData = Object.keys(localStorage).some(key => key.startsWith('attendance-'));
-        const gradesData = Object.keys(localStorage).some(key => key.startsWith('grades-'));
-        const hasCache = !!(profileData || attendanceData || gradesData)
+        const hasCache = hasCachedProfile() || hasAnyAttendance() || hasAnyGrades();
 
         setLoginStatus((prev) => ({
           ...prev,
@@ -80,7 +76,7 @@ export default function Login({ onLoginSuccess, w }) {
 
         if (!isAuthError && hasCache) {
           try {
-            if (attemptedUsername) localStorage.setItem('username', attemptedUsername)
+            if (attemptedUsername) setUsername(attemptedUsername)
             const artificialW = new ArtificialWebPortal();
             onLoginSuccess(artificialW);
           } catch (e) {
@@ -94,40 +90,15 @@ export default function Login({ onLoginSuccess, w }) {
   }, [loginStatus.credentials, onLoginSuccess, w])
 
   useEffect(() => {
-    const handler = (e) => {
-      e.preventDefault()
-      setDeferredPrompt(e)
-      setShowInstall(true)
-    }
-    window.addEventListener("beforeinstallprompt", handler)
-    return () => window.removeEventListener("beforeinstallprompt", handler)
-  }, [])
-
-  useEffect(() => {
-    const handler = () => setShowInstall(false)
-    window.addEventListener("appinstalled", handler)
-    return () => window.removeEventListener("appinstalled", handler)
-  }, [])
-
-  useEffect(() => {
-    const username = localStorage.getItem("username")
-    const password = localStorage.getItem("password")
+    setHasCache(hasCachedProfile() || hasAnyAttendance() || hasAnyGrades())
+    const username = getUsername()
+    const password = getPassword()
     if (username && password) {
       form.setValue("enrollmentNumber", username)
       form.setValue("password", password)
       setLoginStatus(prev => ({ ...prev, credentials: { enrollmentNumber: username, password } }))
     }
   }, [])
-
-  const handleInstallClick = async () => {
-    if (!deferredPrompt) return
-    deferredPrompt.prompt()
-    const { outcome } = await deferredPrompt.userChoice
-    if (outcome === "accepted") {
-      setShowInstall(false)
-    }
-    setDeferredPrompt(null)
-  }
 
   function onSubmit(values) {
     setLoginStatus((prev) => ({
@@ -139,11 +110,9 @@ export default function Login({ onLoginSuccess, w }) {
   }
 
   const handleOfflineMode = () => {
-    const profileData = localStorage.getItem('profileData');
-    const attendanceData = Object.keys(localStorage).some(key => key.startsWith('attendance-'));
-    const gradesData = Object.keys(localStorage).some(key => key.startsWith('grades-'));
+    const hasCache = hasCachedProfile() || hasAnyAttendance() || hasAnyGrades();
 
-    if (!profileData && !attendanceData && !gradesData) {
+    if (!hasCache) {
       setLoginStatus((prev) => ({
         ...prev,
         error: "No cached data available. Please login online first to use offline mode.",
@@ -155,42 +124,57 @@ export default function Login({ onLoginSuccess, w }) {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col">
-      <header className="py-6 px-4 border-b border-border">
-        <div className="container mx-auto flex items-center justify-between">
-          <h1 className="text-3xl font-bold tracking-tighter text-foreground">Modern JIIT WebKiosk</h1>
+    <div className="h-screen bg-background text-foreground flex flex-col">
+      <header className="py-3 px-4 border-b border-border">
+        <div className="container mx-auto flex items-center justify-between gap-4">
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground">Modern JIIT WebKiosk</h1>
           <ThemeBtn />
         </div>
       </header>
 
-      <main className="flex-grow container mx-auto px-4 py-12 flex flex-col items-center justify-center gap-12">
-        {showInstall && (
-          <>
-            <div className="hidden md:flex justify-center mb-4">
-              <img src="/pwa-icons/wheel.svg" alt="JP Portal Logo" className="w-16 h-16 rounded-lg shadow-lg" />
+      <main className="flex-1 min-h-0 container mx-auto px-4 pt-2 pb-2 flex flex-col items-center justify-start gap-0">
+        <div className="w-full flex flex-col items-center justify-center gap-0 md:flex-row md:items-stretch md:justify-center md:gap-6 xl:max-w-6xl">
+          <div className="hidden md:flex md:w-[320px] flex-col items-center gap-6 rounded-3xl border border-border/70 bg-card/80 p-5 shadow-xl">
+            <img src="https://cdn.jsdelivr.net/gh/J2V-k/jportal-vhost@main/public/pwa-icons/wheel.svg" alt="JP Portal Logo" className="w-20 h-20 rounded-2xl shadow-lg" />
+            <div className="text-center space-y-2">
+              <h2 className="text-lg font-semibold text-card-foreground">JP Portal</h2>
             </div>
-            <div className="w-full max-w-md mb-4">
-              <button
-                onClick={handleInstallClick}
-                className="w-full bg-primary border border-border text-primary-foreground py-2 rounded-lg font-semibold hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
-              >
-                <Smartphone className="w-4 h-4" />
-                Install as an App
-              </button>
+            <div className="w-full">
+              <InstallPWA />
             </div>
-          </>
-        )}
-        <div className="w-full max-w-md">
-          <div className="bg-card backdrop-blur-sm rounded-2xl shadow-2xl p-8 border border-border">
-            <h2 className="text-2xl font-bold mb-6 text-card-foreground">Login to Your WebKiosk  Account</h2>
-            {loginStatus.error && (
-              <Alert variant="destructive" className="mb-6">
+          </div>
+          <div className="w-full flex justify-center mb-0 lg:hidden">
+            <div className="w-full max-w-[320px]">
+              <InstallPWA />
+            </div>
+          </div>
+          <div className="w-full min-h-0 md:flex-1">
+            <div className="bg-card backdrop-blur-sm rounded-xl shadow-xl border border-border min-h-0 overflow-hidden">
+              <div className="flex flex-col gap-3 p-4 md:p-5 max-h-[calc(100vh-96px)] overflow-y-auto">
+              <div className="space-y-3">
+                <div>
+                  <h2 className="text-2xl sm:text-3xl font-bold text-card-foreground">Welcome back to WebKiosk</h2>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Sign in with your enrollment number and password to access attendance, grades, timetable, and more.
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-border/60 bg-muted/80 p-3 text-sm text-muted-foreground">
+                  {hasCache ? (
+                    <p className="font-medium text-foreground">Cached data is available for offline use.</p>
+                  ) : (
+                    <p className="font-medium text-foreground">No offline cache detected yet. Sign in once to unlock offline access.</p>
+                  )}
+                </div>
+              </div>
+
+              {loginStatus.error && (
+              <Alert variant="destructive" className="mb-4" role="alert">
                 <AlertDescription>{loginStatus.error}</AlertDescription>
               </Alert>
             )}
 
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
                 <FormField
                   control={form.control}
                   name="enrollmentNumber"
@@ -254,7 +238,7 @@ export default function Login({ onLoginSuccess, w }) {
                 </Button>
               </form>
             </Form>
-            <div className="mt-6 space-y-3">
+            <div className="mt-5 space-y-3">
               <div className="relative">
                 <div className="absolute inset-0 flex items-center">
                   <span className="w-full border-t border-border" />
@@ -263,15 +247,19 @@ export default function Login({ onLoginSuccess, w }) {
                   <span className="px-2 text-muted-foreground bg-background">Or continue without login</span>
                 </div>
               </div>
-              <div className="flex justify-center gap-2">
-                {loginStatus.canFallbackOffline && (
-                  <button
-                    onClick={handleOfflineMode}
-                    className="flex items-center justify-center px-6 py-2 bg-orange-600/20 dark:bg-orange-100 border border-orange-500/30 dark:border-orange-300 text-orange-400 dark:text-orange-700 hover:bg-orange-700/40 dark:hover:bg-orange-50 hover:text-orange-200 dark:hover:text-orange-600 transition-colors rounded-lg text-sm font-medium gap-2"
-                  >
-                    <Smartphone size={18} /> Offline Mode
-                  </button>
-                )}
+              <div className="flex flex-col sm:flex-row justify-center gap-2">
+                <button
+                  onClick={handleOfflineMode}
+                  disabled={loginStatus.isLoading || !hasCache}
+                  className={`flex items-center justify-center px-5 py-2 rounded-lg text-sm font-medium gap-2 transition-colors ${
+                    hasCache
+                      ? "bg-orange-600/20 dark:bg-orange-100 border border-orange-500/30 dark:border-orange-300 text-foreground hover:bg-orange-700/40 dark:hover:bg-orange-50 hover:text-foreground"
+                      : "bg-muted/80 border border-border text-muted-foreground cursor-not-allowed opacity-70"
+                  }`}
+                  title={hasCache ? "Continue with cached data" : "Login once to enable offline mode"}
+                >
+                  <Smartphone size={18} /> Offline Mode
+                </button>
                 <MessMenu>
                   <button className="flex items-center justify-center px-6 py-2 bg-green-600/20 dark:bg-green-100 border border-green-500/30 dark:border-green-300 text-green-400 dark:text-green-700 hover:bg-green-700/40 dark:hover:bg-green-50 hover:text-green-200 dark:hover:text-green-600 transition-colors rounded-lg text-sm font-medium gap-2">
                     <UtensilsCrossed size={18} /> Mess Menu
@@ -291,17 +279,18 @@ export default function Login({ onLoginSuccess, w }) {
             </div>
           </div>
         </div>
+      </div>
+    </div>
       </main>
 
-      <footer className="py-6 text-center text-muted-foreground">
-        <p className="flex items-center justify-center gap-1">
+      <footer className="py-3 text-center text-muted-foreground text-xs sm:text-sm">
+        <p className="flex flex-wrap items-center justify-center gap-1">
           Created with <Heart className="w-4 h-4 text-red-400" /> for JIIT students only
         </p>
-        <p className="text-sm mt-2 flex items-center justify-center gap-1">
+        <p className="mt-1 flex flex-wrap items-center justify-center gap-1">
           Not liable for attendance-related emotional damage <Laugh className="w-4 h-4" />
         </p>
       </footer>
     </div>
   )
 }
-

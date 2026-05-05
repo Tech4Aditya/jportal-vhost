@@ -1,5 +1,26 @@
-import { createContext, useContext, useState, useEffect } from 'react'
+import { createContext, useContext, useState } from 'react'
 import { loadSavedTheme, applyTheme, saveTheme } from '@/lib/theme'
+
+function initializeTheme() {
+    const saved = loadSavedTheme()
+    if(saved){
+        applyTheme(saved)
+        return saved
+    } else {
+        const defaultDark = {
+            id: 'vercelDark',
+            name: 'Vercel Dark',
+            primary: '#ffffff',
+            secondary: '#888888',
+            background: '#000000',
+            foreground: '#1a1a1a',
+            mode: 'dark',
+            font: "'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+        }
+        applyTheme(defaultDark)
+        return defaultDark
+    }
+}
 
 export const ThemeContext = createContext({
     themeMode: 'dark',
@@ -8,33 +29,14 @@ export const ThemeContext = createContext({
 })
 
 export function ThemeProvider({ children }){
-    const [themeMode, setThemeMode] = useState('dark')
-
-    useEffect(()=>{
-        const saved = loadSavedTheme()
-        if(saved){
-            applyTheme(saved)
-            setThemeMode(saved.mode === 'dark' ? 'dark' : 'light')
-        } else {
-            // Apply default dark palette when there's no saved theme
-            const defaultDark = {
-                name: 'Default Dark',
-                primary: '#fafafa',
-                secondary: '#a1a1aa',
-                background: '#09090b',
-                foreground: '#18181b',
-                mode: 'dark'
-            }
-            applyTheme(defaultDark)
-            setThemeMode('dark')
-        }
-    },[])
+    const initialTheme = initializeTheme()
+    const [themeMode, setThemeMode] = useState(initialTheme.mode === 'dark' ? 'dark' : 'light')
 
     function darkTheme(){
         const cur = loadSavedTheme() || {}
         cur.mode = 'dark'
         saveTheme(cur)
-        applyTheme(cur)
+        applyTheme(cur, 'dark') // Pass explicit mode here
         setThemeMode('dark')
     }
 
@@ -42,7 +44,7 @@ export function ThemeProvider({ children }){
         const cur = loadSavedTheme() || {}
         cur.mode = 'light'
         saveTheme(cur)
-        applyTheme(cur)
+        applyTheme(cur, 'light') // Pass explicit mode here
         setThemeMode('light')
     }
 

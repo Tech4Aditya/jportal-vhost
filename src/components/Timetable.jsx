@@ -1,474 +1,380 @@
 import { useState, useEffect, useRef } from "react";
-import { Calendar, Loader2, ArrowLeft, ExternalLink, RefreshCw, Edit2, Trash2, Check, X } from "lucide-react";
-import { motion } from "framer-motion";
+import { 
+  Calendar as CalendarIcon, RefreshCw, 
+  Trash2, X, Plus, Clock, Layers, Settings2, EyeOff, Palmtree, Edit3, PlusCircle
+} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Helmet } from 'react-helmet-async';
-import { useNavigate } from "react-router-dom";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Badge } from "./ui/badge";
+import { Input } from "./ui/input";
+import { getTimetableModifiedEvents, setTimetableIcs, getTimetableIcs, setTimetableModifiedEvents, removeTimetableModifiedEvents } from '@/components/scripts/cache';
 
-const Timetable = ({ w, profileData, setProfileData, subjectData, setSubjectData, subjectSemestersData }) => {
-  const navigate = useNavigate();
-
-  const [timetableUrl, setTimetableUrl] = useState("");
+const Timetable = ({ w, profileData, subjectData, subjectSemestersData }) => {
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const openedRef = useRef(false);
-
+  const [showCustomizer, setShowCustomizer] = useState(false);
   const [selectedVariants, setSelectedVariants] = useState([]);
   const [variantNames, setVariantNames] = useState({});
-
   const [selectedSemesterId, setSelectedSemesterId] = useState(null);
-  const [editingIndex, setEditingIndex] = useState(-1);
-  const [editingValue, setEditingValue] = useState("");
-
-  const [lastCampus, setLastCampus] = useState("62");
-  const [lastYear, setLastYear] = useState("4");
-  const [lastBatch, setLastBatch] = useState("2026");
-
-  useEffect(() => {
-    try {
-      const stored = sessionStorage.getItem('timetable_state');
-      if (stored) {
-        const obj = JSON.parse(stored);
-        if (Array.isArray(obj.variants)) setSelectedVariants(obj.variants);
-        if (obj.names && typeof obj.names === 'object') setVariantNames(obj.names);
-      }
-    } catch (e) { }
-  }, []);
-
-  useEffect(() => {
-    try {
-      sessionStorage.setItem('timetable_state', JSON.stringify({ variants: selectedVariants, names: variantNames }));
-    } catch (e) { }
-  }, [selectedVariants, variantNames]);
-
-  const updateUrlFromVariants = (variants, campus = lastCampus, year = lastYear, batch = lastBatch) => {
-    const selectedSubjects = variants && variants.length ? variants.join(',') : 'EC611,EC671,EC691';
-    const baseUrl = "https://simple-timetable.tashif.codes/";
-    const params = new URLSearchParams({ campus, year, batch, selectedSubjects, isGenerating: "true" });
-    const url = `${baseUrl}?${params.toString()}`;
-    setTimetableUrl(url);
-  };
-
   const [localProfileData, setLocalProfileData] = useState(profileData || null);
   const [localSubjectData, setLocalSubjectData] = useState(subjectData || {});
   const [localSemestersData, setLocalSemestersData] = useState(subjectSemestersData || null);
+  const fileInputRef = useRef(null);
+  const todayRef = useRef(null);
+  const [icalEvents, setIcalEvents] = useState([]);
+  
+  const currentDayIndex = new Date().getDay();
 
-  useEffect(() => {
-    if (profileData && !localProfileData) setLocalProfileData(profileData);
-  }, [profileData]);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [editingEventIndex, setEditingEventIndex] = useState(null);
+  const [formData, setFormData] = useState({ summary: "", location: "", day: "1", startTime: "09:00", endTime: "10:00" });
 
-  useEffect(() => {
-    if (subjectData && Object.keys(subjectData).length > 0 && Object.keys(localSubjectData).length === 0) {
-      setLocalSubjectData(subjectData);
-    }
-  }, [subjectData]);
-
-  useEffect(() => {
-    if (subjectSemestersData && !localSemestersData) setLocalSemestersData(subjectSemestersData);
-  }, [subjectSemestersData]);
-
-  const generateForSemester = async (semId) => {
-    setLoading(true);
-    setError(null);
-
-    const generateVariants = (subjectCode) => {
-      if (!subjectCode) return [];
-      const full = String(subjectCode).trim().toUpperCase();
-      const variants = new Set();
-
-      const matches = full.match(/[A-Z]+\d+/g);
-      if (matches) matches.forEach(m => variants.add(m));
-
-      if (full.length >= 5) variants.add(full.slice(-5));
-      if (full.length >= 6) variants.add(full.slice(-6));
-
-      return Array.from(variants).filter(v => v && v.length >= 4 && /^[A-Z]/.test(v));
+  const formatSubjectDisplay = (summary) => {
+    if (!summary) return { name: "Unknown", type: null };
+    const cleanStr = summary.replace(/\\n/g, ' ').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+    const typeMap = {
+      'L -': { label: 'Lecture', color: 'bg-blue-500/10 text-blue-500 border-blue-500/20' },
+      'T -': { label: 'Tutorial', color: 'bg-amber-500/10 text-amber-500 border-amber-500/20' },
+      'P -': { label: 'Practical', color: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' }
     };
-
-    try {
-      let profile = localProfileData;
-      if (!profile && w?.get_personal_info) {
-        profile = await w.get_personal_info().catch(() => null);
-        if (profile) setLocalProfileData(profile);
-        if (setProfileData && profile) setProfileData(profile);
-      }
-
-      const profileInfo = profile?.generalinformation || {};
-
-      let campus = "62";
-      const programCode = (profileInfo.programcode || "").toString();
-      const institute = (profileInfo.institutename || "").toString();
-      const enrollment = (profileInfo.registrationno || "").toString();
-      if (programCode.includes("128") || programCode.toLowerCase().includes("noida") || institute.toLowerCase().includes("noida") || enrollment.startsWith("99")) {
-        campus = "128";
-      }
-
-      let year = "4";
-      const semRaw = profileInfo.semester || "";
-      const semMatch = String(semRaw).match(/(\d+)/);
-      if (semMatch) {
-        const semNum = parseInt(semMatch[1]);
-        year = Math.ceil(semNum / 2).toString();
-      }
-
-      const batch = profileInfo.batch || profileInfo.batchname || "2026";
-
-      let subjectsMap = localSubjectData || {};
-      let semesters = localSemestersData;
-
-      if ((!semesters || !semesters.latest_semester) && w?.get_registered_semesters) {
-        const registered = await w.get_registered_semesters().catch(() => []);
-        if (registered && registered.length > 0) {
-          semesters = { semesters: registered, latest_semester: registered[0] };
-          setLocalSemestersData(semesters);
-        }
-      }
-
-      if (semId && (!subjectsMap[semId] || !subjectsMap[semId].subjects) && w?.get_registered_subjects_and_faculties) {
-        try {
-          const subs = await w.get_registered_subjects_and_faculties({ registration_id: semId });
-          subjectsMap = { ...subjectsMap, [semId]: subs };
-          setLocalSubjectData(subjectsMap);
-          if (setSubjectData) setSubjectData(subjectsMap);
-        } catch (e) { }
-      }
-
-      const arr = [];
-      const names = {};
-      if (semId && subjectsMap[semId] && subjectsMap[semId].subjects) {
-        subjectsMap[semId].subjects.forEach(s => {
-          const subjectName = s.subject_name || s.subjectname || s.subject || s.name || s.subject_code;
-          generateVariants(s.subject_code).forEach(v => { arr.push(v); if (!names[v]) names[v] = subjectName; });
-        });
-      } else if (Object.keys(subjectsMap).length > 0) {
-        const firstKey = Object.keys(subjectsMap)[0];
-        subjectsMap[firstKey].subjects.forEach(s => {
-          const subjectName = s.subject_name || s.subjectname || s.subject || s.name || s.subject_code;
-          generateVariants(s.subject_code).forEach(v => { arr.push(v); if (!names[v]) names[v] = subjectName; });
-        });
-      }
-
-      const unique = Array.from(new Set(arr.filter(v => v && v.length >= 4)));
-      setSelectedVariants(unique);
-      setVariantNames(names);
-      const selectedSubjects = unique.length ? unique.join(',') : 'EC611,EC671,EC691';
-
-      const baseUrl = "https://simple-timetable.tashif.codes/";
-      const params = new URLSearchParams({ campus, year, batch, selectedSubjects, isGenerating: "true" });
-      const url = `${baseUrl}?${params.toString()}`;
-      setLastCampus(campus);
-      setLastYear(year);
-      setLastBatch(batch);
-      setTimetableUrl(url);
-      if (!openedRef.current) {
-        window.open(url, '_blank');
-        openedRef.current = true;
-      }
-
-    } catch (err) {
-      console.error(err);
-      setError("Failed to generate timetable URL. Please try again.");
-    } finally {
-      setLoading(false);
+    const prefix = cleanStr.substring(0, 3);
+    if (typeMap[prefix]) {
+      return { name: cleanStr.substring(3).trim(), type: typeMap[prefix] };
     }
+    return { name: cleanStr, type: null };
+  };
+
+  const generateVariants = (subjectCode) => {
+    if (!subjectCode) return [];
+    const full = String(subjectCode).trim().toUpperCase();
+    const variants = new Set();
+    const matches = full.match(/[A-Z]+\d+/g);
+    if (matches) matches.forEach(m => variants.add(m));
+    if (full.length >= 5) variants.add(full.slice(-5));
+    if (full.length >= 6) variants.add(full.slice(-6));
+    return Array.from(variants).filter(v => v && v.length >= 4 && /^[A-Z]/.test(v));
   };
 
   useEffect(() => {
-    const requestRaw = sessionStorage.getItem('timetableRequest');
-    const request = requestRaw ? JSON.parse(requestRaw) : null;
-
-    if (request && request.semId) {
-      sessionStorage.removeItem('timetableRequest');
-      setSelectedSemesterId(request.semId);
-      return;
-    }
-
-    (async () => {
-      try {
-        const registered = await (w?.get_registered_semesters ? w.get_registered_semesters() : Promise.resolve([]));
-        if (registered && registered.length > 0) {
-          setLocalSemestersData({ semesters: registered, latest_semester: registered[0] });
-
-          const currentYear = new Date().getFullYear().toString();
-          const currentYearSemester = registered.find(sem =>
-            sem.registration_code && sem.registration_code.includes(currentYear)
-          );
-          const selectedSem = currentYearSemester || registered[0];
-          setSelectedSemesterId(selectedSem.registration_id);
-        }
-      } catch (err) {
-      } finally {
-        setLoading(false);
-      }
-    })();
-
-    const updateOnVariantEdit = (variants) => {
-      if (!variants || variants.length === 0) return;
-      updateUrlFromVariants(variants, lastCampus, lastYear, lastBatch);
-    };
-
-    window.__rebuildTimetableFromVariants = updateOnVariantEdit;
-
-    return () => {
-      delete window.__rebuildTimetableFromVariants;
-    };
-  }, [w]);
-
-  useEffect(() => {
-    const requestRaw = sessionStorage.getItem('timetableRequest');
-    const request = requestRaw ? JSON.parse(requestRaw) : null;
-
-    if (request && request.semId) {
-      sessionStorage.removeItem('timetableRequest');
-
-      (async () => {
-        try {
-          const semId = request.semId;
-
-          let profile = localProfileData;
-          if (!profile && w?.get_personal_info) {
-            profile = await w.get_personal_info().catch(() => null);
-            if (profile) setLocalProfileData(profile);
-            if (setProfileData && profile) setProfileData(profile);
-          }
-
-          const profileInfo = profile?.generalinformation || {};
-          let campus = "62";
-          const programCode = (profileInfo.programcode || "").toString();
-          const institute = (profileInfo.institutename || "").toString();
-          const enrollment = (profileInfo.registrationno || "").toString();
-          if (programCode.includes("128") || programCode.toLowerCase().includes("noida") || institute.toLowerCase().includes("noida") || enrollment.startsWith("99")) {
-            campus = "128";
-          }
-          let year = "4";
-          const semRaw = profileInfo.semester || "";
-          const semMatch = String(semRaw).match(/(\d+)/);
-          if (semMatch) {
-            const semNum = parseInt(semMatch[1]);
-            year = Math.ceil(semNum / 2).toString();
-          }
-          const batch = profileInfo.batch || profileInfo.batchname || "2026";
-
-          let subjectsMap = localSubjectData || {};
-          let semesters = localSemestersData;
-
-          if ((!semesters || !semesters.latest_semester) && w?.get_registered_semesters) {
-            const registered = await w.get_registered_semesters().catch(() => []);
-            if (registered && registered.length > 0) {
-              semesters = { semesters: registered, latest_semester: registered[0] };
-              setLocalSemestersData(semesters);
-            }
-          }
-
-          if (!subjectsMap[semId] && w?.get_registered_subjects_and_faculties) {
-            try {
-              const subs = await w.get_registered_subjects_and_faculties({ registration_id: semId });
-              subjectsMap = { ...subjectsMap, [semId]: subs };
-              setLocalSubjectData(subjectsMap);
-              if (setSubjectData) setSubjectData(subjectsMap);
-            } catch (e) {
-            }
-          }
-
-
-          const generateVariants = (subjectCode) => {
-            if (!subjectCode) return [];
-            const full = String(subjectCode).trim().toUpperCase();
-            const variants = new Set();
-            const matches = full.match(/[A-Z]+\d+/g);
-            if (matches) matches.forEach(m => variants.add(m));
-            if (full.length >= 5) variants.add(full.slice(-5));
-            if (full.length >= 6) variants.add(full.slice(-6));
-            return Array.from(variants).filter(v => v && v.length >= 4 && /^[A-Z]/.test(v));
-          };
-
-          let arr = [];
-          const names = {};
-          if (subjectsMap[semId] && subjectsMap[semId].subjects) {
-            subjectsMap[semId].subjects.forEach(s => {
-              const subjectName = s.subject_name || s.subjectname || s.subject || s.name || s.subject_code;
-              generateVariants(s.subject_code).forEach(v => { arr.push(v); if (!names[v]) names[v] = subjectName; });
-            });
-          }
-
-          const unique = Array.from(new Set(arr.filter(v => v && v.length >= 4)));
-          setSelectedVariants(unique);
-          setVariantNames(names);
-          updateUrlFromVariants(unique, campus, year, batch);
-        } catch (err) {
-          console.error('Error processing timetableRequest:', err);
-        }
-      })();
-
-      return;
-    }
-
-  }, [timetableUrl]);
-
-  useEffect(() => {
     if (selectedSemesterId) {
-      generateForSemester(selectedSemesterId);
+      updateShortCodes(selectedSemesterId);
     }
   }, [selectedSemesterId]);
 
-  if (loading) {
-    return (
-      <div className="bg-background text-foreground">
-        <div className="text-center py-8">
-          <Loader2 className="w-8 h-8 text-foreground animate-spin mx-auto mb-4" />
-          <p className="text-foreground">Loading timetable...</p>
-          <div className="mt-4 flex justify-center">
-            <Button size="sm" variant="ghost" onClick={() => navigate(-1)}>
-              <ArrowLeft className="w-4 h-4" />
-              Back
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
+  const updateShortCodes = async (semId) => {
+    setLoading(true);
+    let data = localSubjectData[semId];
+    
+    if (!data && w?.get_registered_subjects_and_faculties) {
+      try {
+        data = await w.get_registered_subjects_and_faculties({ registration_id: semId });
+        setLocalSubjectData(prev => ({ ...prev, [semId]: data }));
+      } catch (e) {
+        console.error("Failed to fetch subjects", e);
+      }
+    }
+
+    const shortCodesArr = [];
+    const longCodesArr = [];
+    const names = {};
+
+    if (data?.subjects) {
+      data.subjects.forEach(s => {
+        const subjectFullName = s.subjectdesc || s.subject_desc || s.subject_name || s.subjectname;
+        const rawCode = s.subject_code || s.subjectcode;
+        
+        const variants = generateVariants(rawCode);
+        variants.forEach(v => {
+          shortCodesArr.push(v);
+          if (!names[v]) names[v] = subjectFullName;
+        });
+
+        if (rawCode) {
+          const longCode = String(rawCode).trim().toUpperCase();
+          longCodesArr.push(longCode);
+          if (!names[longCode]) names[longCode] = subjectFullName;
+        }
+      });
+    }
+
+    const uniqueShort = Array.from(new Set(shortCodesArr.filter(v => v && v.length >= 4)));
+    const uniqueLong = Array.from(new Set(longCodesArr)).filter(l => !uniqueShort.includes(l));
+    const combined = [...uniqueShort, ...uniqueLong];
+
+    setSelectedVariants(combined);
+    setVariantNames(names);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    const initTimetable = async () => {
+      setLoading(true);
+      const savedEvents = getTimetableModifiedEvents();
+      if (savedEvents) {
+        setIcalEvents(savedEvents.map(ev => ({ 
+          ...ev, 
+          start: new Date(ev.start),
+          end: ev.end ? new Date(ev.end) : new Date(new Date(ev.start).getTime() + 60 * 60 * 1000)
+        })));
+        setShowCustomizer(false);
+      } else {
+        const savedIcs = getTimetableIcs();
+        if (savedIcs) {
+          setIcalEvents(parseIcs(savedIcs));
+          setShowCustomizer(false);
+        } else {
+          setShowCustomizer(true);
+        }
+      }
+
+      let currentSems = localSemestersData;
+      if (!currentSems?.semesters?.length && w?.get_registered_semesters) {
+        try {
+          const registered = await w.get_registered_semesters();
+          if (registered?.length) {
+            currentSems = { semesters: registered, latest_semester: registered[0] };
+            setLocalSemestersData(currentSems);
+          }
+        } catch (e) {}
+      }
+
+      if (currentSems?.semesters?.length && !selectedSemesterId) {
+        const currentYear = new Date().getFullYear().toString();
+        const currentYearSemester = currentSems.semesters.find(sem =>
+          sem.registration_code && sem.registration_code.includes(currentYear)
+        );
+        setSelectedSemesterId(currentYearSemester?.registration_id || currentSems.semesters[0].registration_id);
+      }
+      setLoading(false);
+    };
+    initTimetable();
+  }, [w]);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setTimetableIcs(text);
+      const parsed = parseIcs(text);
+      setIcalEvents(parsed);
+      setTimetableModifiedEvents(parsed);
+      setShowCustomizer(false);
+    } catch (err) { console.error(err); }
+  };
+
+  const saveClass = () => {
+    const today = new Date();
+    const targetDay = parseInt(formData.day);
+    const diff = targetDay - today.getDay();
+    const eventDate = new Date(today.setDate(today.getDate() + diff));
+    const [sH, sM] = formData.startTime.split(':');
+    const [eH, eM] = formData.endTime.split(':');
+    const start = new Date(eventDate.setHours(sH, sM, 0));
+    const end = new Date(new Date(eventDate).setHours(eH, eM, 0));
+
+    const updatedEvent = { summary: formData.summary, location: formData.location, start, end };
+    let updatedEvents = [...icalEvents];
+    if (editingEventIndex !== null) updatedEvents[editingEventIndex] = updatedEvent;
+    else updatedEvents.push(updatedEvent);
+
+    updatedEvents.sort((a, b) => a.start - b.start);
+    setIcalEvents(updatedEvents);
+    setTimetableModifiedEvents(updatedEvents);
+    setIsDialogOpen(false);
+  };
+
+  function parseIcs(text) {
+    if (!text) return [];
+    const unfolded = text.replace(/\r?\n[ \t]/g, '');
+    const parts = unfolded.split(/BEGIN:VEVENT/).slice(1);
+    const out = [];
+    parts.forEach(p => {
+      const body = p.split(/END:VEVENT/)[0];
+      const ev = {};
+      body.split(/\r?\n/).forEach(line => {
+        const [key, ...val] = line.split(':');
+        if (key?.startsWith('DTSTART')) ev.dtstart = val.join(':');
+        if (key?.startsWith('DTEND')) ev.dtend = val.join(':');
+        if (key === 'SUMMARY') ev.summary = val.join(':');
+        if (key === 'LOCATION') ev.location = val.join(':');
+      });
+      const parseDate = (s) => {
+        const m = s?.match(/(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/);
+        return m ? new Date(m[1], m[2]-1, m[3], m[4], m[5]) : null;
+      };
+      const start = parseDate(ev.dtstart);
+      const end = parseDate(ev.dtend) || (start ? new Date(start.getTime() + 60*60*1000) : null);
+      if (start) out.push({ start, end, summary: ev.summary, location: ev.location || "N/A" });
+    });
+    return out.sort((a, b) => a.start - b.start);
   }
 
+  const handleLaunchExternal = async () => {
+    setLoading(true);
+    let profile = localProfileData;
+    if (!profile && w?.get_personal_info) profile = await w.get_personal_info().catch(() => null);
+    const profileInfo = profile?.generalinformation || {};
+    let campus = (profileInfo.programcode?.includes("128") || profileInfo.registrationno?.toString().startsWith("99")) ? "128" : "62";
+    let year = "1";
+    const semMatch = String(profileInfo.semester || "").match(/(\d+)/);
+    if (semMatch) year = Math.ceil(parseInt(semMatch[1]) / 2).toString();
+    const batch = profileInfo.batch || "2026";
+
+    const selectedSubjectsStr = selectedVariants.length ? selectedVariants.join(',') : '';
+    const params = new URLSearchParams({ campus, year, batch, selectedSubjects: selectedSubjectsStr, isGenerating: "true" });
+    window.open(`https://simple-timetable.tashif.codes/?${params.toString()}`, '_blank');
+    setLoading(false);
+  };
+
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.5 }}
-      className="bg-background text-foreground h-full overflow-hidden"
-    >
-      <Helmet>
-        <title>Timetable - JP Portal | JIIT Student Portal</title>
-        <meta name="description" content="Generate and view your personalized timetable based on registered subjects at JIIT." />
-        <meta property="og:title" content="Timetable - JP Portal | JIIT Student Portal" />
-        <meta property="og:description" content="Generate and view your personalized timetable based on registered subjects at JIIT." />
-        <meta property="og:url" content="https://jportal2-0.vercel.app/#/timetable" />
-        <meta name="keywords" content="timetable, class schedule, JP Portal, JIIT" />
-        <link rel="canonical" href="https://jportal2-0.vercel.app/#/timetable" />
-      </Helmet>
+    <div className="min-h-screen bg-background text-foreground pb-20">
+      <Helmet><title>Timetable | JP Portal</title></Helmet>
 
-      <div className="max-w-full mx-auto p-6 rounded-lg bg-card text-foreground shadow-sm">
-        <h1 className="text-xl font-bold mb-4 text-center">Timetable Generator</h1>
-        <p className="text-sm text-center mb-4 text-muted-foreground">Select your semester, generate subject codes, and open your personalized timetable.</p>
-        <div className="p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 w-full">
-          <div className="flex items-start sm:items-center gap-3 w-full">
-            <div className="flex flex-col w-full">
-              <Select value={selectedSemesterId || ""} onValueChange={(val) => setSelectedSemesterId(val)}>
-                <SelectTrigger className="bg-card text-foreground border-border w-full sm:w-56">
-                  <SelectValue placeholder="Select semester" />
-                </SelectTrigger>
-                <SelectContent className="bg-card text-foreground">
-                  {localSemestersData?.semesters?.map((s) => (
-                    <SelectItem key={s.registration_id} value={s.registration_id}>{s.registration_code}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {!localSemestersData?.semesters?.length && (
-                <span className="text-muted-foreground text-xs mt-1">No registered semesters available — Generate will use default subjects.</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <Button size="sm" className="w-full sm:w-auto bg-primary text-primary-foreground border border-primary/20" onClick={async () => {
-                if (!selectedSemesterId && localSemestersData?.semesters?.length) { setError('Please select a semester'); return; }
-                await generateForSemester(selectedSemesterId);
-                if (timetableUrl) {
-                  window.open(timetableUrl, '_blank');
-                }
-              }}>Generate</Button>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex justify-center py-1">
-          <div className="text-center">
-            <div className="mt-4 flex justify-center flex-col items-center gap-3">
-              {selectedVariants && selectedVariants.length > 0 && (
-                <div className="flex flex-wrap gap-2 max-w-full pb-2 align-top justify-center">
-                  {selectedVariants.slice(0, 50).map((v, i) => (
-                    <div key={v} className="flex items-center justify-between p-2 rounded-lg bg-muted/10 text-muted-foreground border border-border">
-                      {editingIndex === i ? (
-                        <input
-                          value={editingValue}
-                          onChange={(e) => setEditingValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              const newArr = [...selectedVariants];
-                              newArr[i] = editingValue.trim();
-                              setSelectedVariants(newArr.filter(av => av && av.length >= 4 && /^[A-Z]/.test(av)));
-                              setEditingIndex(-1);
-                              updateUrlFromVariants(newArr.filter(av => av && av.length >= 4 && /^[A-Z]/.test(av)));
-                            } else if (e.key === 'Escape') {
-                              setEditingIndex(-1);
-                            }
-                          }}
-                          className="bg-transparent outline-none text-sm flex-1"
-                        />
-                      ) : (
-                        <div className="flex-1">
-                          <div className="font-medium text-sm">{v}</div>
-                          {variantNames[v] && variantNames[v] !== v && (
-                            <div className="text-xs text-muted-foreground truncate">{variantNames[v]}</div>
-                          )}
-                        </div>
-                      )}
-                      {editingIndex === i ? (
-                        <Button size="icon" variant="ghost" onClick={() => {
-                          const old = selectedVariants[i];
-                          const newVal = editingValue.trim();
-                          const newArr = [...selectedVariants];
-                          newArr[i] = newVal;
-                          const filtered = newArr.filter(av => av && av.length >= 4 && /^[A-Z]/.test(av));
-                          const newNames = { ...variantNames };
-                          if (newVal) newNames[newVal] = newNames[newVal] || newVal;
-                          if (old && old !== newVal) delete newNames[old];
-                          setVariantNames(newNames);
-                          setSelectedVariants(filtered);
-                          setEditingIndex(-1);
-                          updateUrlFromVariants(filtered);
-                        }}><Check className="w-3 h-3" /></Button>
-                      ) : (
-                        <div className="flex gap-0">
-                          <Button size="icon" variant="ghost" onClick={() => { setEditingIndex(i); setEditingValue(v); }}><Edit2 className="w-3 h-3" /></Button>
-                          <Button size="icon" variant="ghost" onClick={() => { const old = v; const newArr = selectedVariants.filter((_, idx) => idx !== i); const newNames = { ...variantNames }; delete newNames[old]; setVariantNames(newNames); setSelectedVariants(newArr); updateUrlFromVariants(newArr); }}><Trash2 className="w-3 h-3" /></Button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <Button size="sm" className="bg-card text-foreground border border-border" onClick={() => {
-                const v = prompt('Enter new variant (e.g., PH532)');
-                if (v) {
-                  const trimmed = v.trim().toUpperCase();
-                  if (!trimmed || trimmed.length < 4 || !/^[A-Z]/.test(trimmed)) { alert('Variant must start with a letter and be at least 4 characters'); return; }
-                  const newArr = Array.from(new Set([trimmed, ...selectedVariants]));
-                  const newNames = { ...variantNames };
-                  newNames[trimmed] = newNames[trimmed] || trimmed;
-                  setVariantNames(newNames);
-                  setSelectedVariants(newArr);
-                  updateUrlFromVariants(newArr);
-                }
-              }}>+</Button>
-
-              <div className="flex items-center gap-2">
-                <Button size="sm" className="bg-card text-foreground" disabled={!timetableUrl} onClick={() => {
-                  if (!timetableUrl) { setError('Timetable URL not ready yet.'); return; }
-                  try { window.open(timetableUrl, '_blank'); openedRef.current = true; } catch (e) { }
-                }}>
-                  <ExternalLink className="w-4 h-4" />
-                  Open in new tab
-                </Button>
-                <Button size="sm" className="text-foreground" onClick={() => navigate(-1)}>
-                  <ArrowLeft className="w-4 h-4" />
-                  Back
-                </Button>
+      <AnimatePresence>
+        {isDialogOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="bg-card w-full max-w-md rounded-lg border border-border p-6 shadow-2xl relative">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold">{editingEventIndex !== null ? "Edit Class" : "Add Class"}</h3>
+                <Button variant="ghost" size="icon" onClick={() => setIsDialogOpen(false)}><X /></Button>
               </div>
-            </div>
+              <div className="space-y-4">
+                <Input placeholder="Subject" value={formData.summary} onChange={e => setFormData({...formData, summary: e.target.value})} />
+                <Input placeholder="Room" value={formData.location} onChange={e => setFormData({...formData, location: e.target.value})} />
+                <Select value={formData.day} onValueChange={v => setFormData({...formData, day: v})}>
+                  <SelectTrigger><SelectValue placeholder="Day" /></SelectTrigger>
+                  <SelectContent className="z-[200]">
+                    {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => (
+                      <SelectItem key={d} value={String(i+1)}>{d}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="grid grid-cols-2 gap-4">
+                  <Input type="time" value={formData.startTime} onChange={e => setFormData({...formData, startTime: e.target.value})} />
+                  <Input type="time" value={formData.endTime} onChange={e => setFormData({...formData, endTime: e.target.value})} />
+                </div>
+                <Button className="w-full" onClick={saveClass}>Save</Button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <div className="border-b bg-card/50 backdrop-blur-md sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setShowCustomizer(!showCustomizer)}>
+              {showCustomizer ? <EyeOff className="w-4 h-4" /> : <Settings2 className="w-4 h-4" />}
+              <span className="ml-2 xs:inline">Automated Parser</span>
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+              <CalendarIcon className="w-4 h-4" /> <span className="xs:inline ml-2">Import ICS file</span>
+            </Button>
+            <input ref={fileInputRef} type="file" className="hidden" accept=".ics" onChange={(e) => handleFile(e.target.files[0])} />
           </div>
         </div>
       </div>
-    </motion.div>
+
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+        <AnimatePresence initial={false}>
+          {showCustomizer && (
+            <motion.section 
+              key="customizer"
+              initial={{ height: 0, opacity: 0 }} 
+              animate={{ height: "auto", opacity: 1 }} 
+              exit={{ height: 0, opacity: 0 }} 
+              className="overflow-hidden"
+            >
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                <Card className="shadow-sm border-border/50 rounded-lg">
+                  <CardHeader className="pb-3"><CardTitle className="text-sm font-bold flex items-center gap-2"><Layers className="w-4 h-4" /> Select Semester</CardTitle></CardHeader>
+                  <CardContent className="space-y-3">
+                    <Select value={selectedSemesterId || ""} onValueChange={setSelectedSemesterId}>
+                      <SelectTrigger><SelectValue placeholder="Select Semester" /></SelectTrigger>
+                      <SelectContent className="z-40">
+                        {localSemestersData?.semesters?.map(s => (
+                          <SelectItem key={s.registration_id} value={s.registration_id}>{s.registration_code}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button variant="secondary" className="w-full gap-2" onClick={handleLaunchExternal} disabled={!selectedSemesterId}>
+                      <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Generate Timetable
+                    </Button>
+                  </CardContent>
+                </Card>
+                <Card className="lg:col-span-2 shadow-sm border-border/50 rounded-lg">
+                  <CardHeader className="pb-3 flex justify-between">
+                    <CardTitle className="text-sm font-bold">Subject Codes</CardTitle>
+                    <Button variant="ghost" size="sm" onClick={() => {
+                      const v = prompt('Code:'); if(v) { setSelectedVariants(prev => [...prev, v.toUpperCase()]); setVariantNames(p => ({...p, [v.toUpperCase()]: v})); }
+                    }}><Plus className="w-4 h-4" /> Manual</Button>
+                  </CardHeader>
+                  <CardContent className="flex flex-wrap gap-2">
+                    {selectedVariants.map((v, i) => (
+                      <div key={v} className="flex items-center bg-muted/40 rounded-lg border border-border overflow-hidden">
+                        <div className="px-3 py-1 bg-primary/10 border-r border-border text-[11px] font-bold text-primary">{v}</div>
+                        <div className="px-3 py-1 text-[10px] text-muted-foreground truncate max-w-[150px]">{variantNames[v] || v}</div>
+                        <button onClick={() => setSelectedVariants(prev => prev.filter((_, idx) => idx !== i))} className="px-2 hover:bg-destructive/10 text-muted-foreground transition-colors"><X className="w-3 h-3" /></button>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              </div>
+            </motion.section>
+          )}
+        </AnimatePresence>
+
+        <section className="space-y-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-bold flex items-center gap-2"><CalendarIcon className="w-5 h-5 text-primary" /> Weekly Schedule</h2>
+            <div className="flex gap-2">
+               <Button variant="outline" size="sm" onClick={() => setIsDialogOpen(true)}><PlusCircle className="w-4 h-4 mr-2" /> Add</Button>
+               {icalEvents.length > 0 && <Button variant="ghost" size="sm" onClick={() => { removeTimetableModifiedEvents(); setIcalEvents([]); }} className="text-destructive"><Trash2 className="w-4 h-4" /></Button>}
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
+            {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((day, index) => {
+              const di = index + 1;
+              const dayEvents = icalEvents.filter(ev => ev.start.getDay() === di);
+              const isToday = currentDayIndex === di;
+              return (
+                <div key={day} ref={isToday ? todayRef : null} className={`flex flex-col gap-3 p-1 rounded-lg ${isToday ? 'bg-amber-500/5 ring-2 ring-amber-400' : ''}`}>
+                  <span className={`text-[10px] font-black uppercase tracking-widest px-2 pt-1 ${isToday ? 'text-amber-600' : 'text-muted-foreground/60'}`}>{day}</span>
+                  <div className={`flex flex-col gap-2 p-2 rounded-lg border min-h-[140px] ${dayEvents.length ? 'bg-muted/10' : 'border-dashed border-border/30'}`}>
+                    {dayEvents.map((ev, idx) => {
+                      const subject = formatSubjectDisplay(ev.summary);
+                      return (
+                        <div key={idx} className="p-3 rounded-lg bg-card border shadow-sm group relative overflow-hidden transition-transform hover:scale-[1.02]">
+                          <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 flex gap-1 z-10 transition-opacity">
+                            <button onClick={() => { setEditingEventIndex(icalEvents.indexOf(ev)); setFormData({summary: ev.summary, location: ev.location, day: String(ev.start.getDay()), startTime: ev.start.toTimeString().substring(0,5), endTime: ev.end.toTimeString().substring(0,5)}); setIsDialogOpen(true); }} className="p-1 hover:bg-muted text-muted-foreground"><Edit3 className="w-3 h-3" /></button>
+                            <button onClick={() => setIcalEvents(p => p.filter(e => e !== ev))} className="p-1 hover:bg-destructive/10 text-destructive"><Trash2 className="w-3 h-3" /></button>
+                          </div>
+                          {subject.type && <Badge variant="outline" className={`mb-1.5 text-[8px] h-3.5 px-1.5 font-bold uppercase rounded-md ${subject.type.color}`}>{subject.type.label}</Badge>}
+                          <p className="font-bold text-[10.5px] leading-tight mb-2 pr-6">{subject.name}</p>
+                          <div className="space-y-1 text-[9px] text-muted-foreground font-medium">
+                            <div className="flex items-center gap-1"><Clock className="w-2.5 h-2.5 text-primary/70" /> {ev.start.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})} - {ev.end.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                            {ev.location && <Badge variant="secondary" className="text-[11px] font-black bg-primary/20 text-primary border-none h-5 rounded-md">{ev.location}</Badge>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {!dayEvents.length && (
+                      <div className="flex-1 flex flex-col items-center justify-center gap-2 opacity-30">
+                        <Palmtree className="w-6 h-6 text-emerald-500" />
+                        <span className="text-[10px] font-bold uppercase text-emerald-600">Holiday</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      </main>
+    </div>
   );
 };
 
