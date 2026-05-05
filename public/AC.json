@@ -4,8 +4,8 @@
   "timelineEvents": [
     {
       "startDate": "2025-07-10",
-      "endDate": null,
-      "semester": "Odd",
+      "endDate": null,  
+      "semester": "Odd", 
       "type": "Academic",
       "category": "Registration / Reporting",
       "description": "Registration of 1st Semester (B.Tech, Intgt M.Tech, All UG and Diploma)"
